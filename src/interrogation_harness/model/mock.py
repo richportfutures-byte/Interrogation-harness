@@ -1,0 +1,308 @@
+"""Deterministic offline model used by tests and the acceptance suite."""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Any
+
+from interrogation_harness import canonical
+from interrogation_harness.model.adapter import ModelAdapter, ModelJob, ModelRequest
+
+
+class MockScenario(str, Enum):
+    """Named canned responses supplied by the deterministic mock."""
+
+    INITIAL_EXTRACTION = "initial_extraction"
+    RANK_NEXT_WORK_ITEM = "rank_next_work_item"
+    INTERPRET_CONFIRM = "interpret_user_answer:confirm"
+    INTERPRET_REJECT = "interpret_user_answer:reject"
+    INTERPRET_REVISE = "interpret_user_answer:revise"
+    INTERPRET_DEFER = "interpret_user_answer:defer"
+    INTERPRET_UNKNOWN = "interpret_user_answer:unknown"
+    CONTRADICTION_AUDIT = "contradiction_audit"
+    ARTIFACT_GENERATION = "artifact_generation"
+    MALFORMED_JSON = "malformed_json"
+    ILLEGAL_TRANSITION = "illegal_transition"
+    CREATION_WITH_DURABLE_ID = "creation_with_durable_id"
+
+
+def _raw_json(obj: dict[str, Any]) -> str:
+    """Return stable raw JSON without validating the proposal."""
+    return canonical.dumps_event_line(obj)
+
+
+RESPONSES: dict[MockScenario, str] = {
+    MockScenario.INITIAL_EXTRACTION: _raw_json(
+        {
+            "assumptions": [
+                {
+                    "tmp_handle": "tmp_assumption_1",
+                    "statement": "Payments require idempotency keys.",
+                    "status": "candidate",
+                    "source_type": "user_stated",
+                    "source_excerpt": "Payments require idempotency keys.",
+                    "blast_radius": "high",
+                    "downstream_impact": "Payment retries and duplicate prevention",
+                    "risk_if_wrong": "Duplicate charges or corrupted payment state",
+                },
+                {
+                    "tmp_handle": "tmp_assumption_2",
+                    "statement": "Operators can tolerate manual force close.",
+                    "status": "candidate",
+                    "source_type": "model_inferred",
+                    "source_excerpt": None,
+                    "blast_radius": "medium",
+                    "downstream_impact": "Closure workflow",
+                    "risk_if_wrong": "Incomplete handoff expectations",
+                },
+            ],
+            "work_items": [
+                {
+                    "tmp_handle": "tmp_work_1",
+                    "kind": "resolve_assumption",
+                    "question": "Should payment retries be idempotent?",
+                    "why_it_matters": "It controls duplicate side effects.",
+                    "what_breaks_if_wrong": "A retry can create two payments.",
+                    "blast_radius": "high",
+                    "blocks_closure": True,
+                    "related_temp_refs": ["tmp_assumption_1"],
+                    "answer_options": ["confirm", "reject", "revise", "defer", "unknown"],
+                }
+            ],
+            "risks": [],
+            "terms": [],
+            "decisions": [],
+            "contradictions": [],
+        }
+    ),
+    MockScenario.RANK_NEXT_WORK_ITEM: _raw_json(
+        {
+            "selected_work_item_id": "W-0001",
+            "question": "Should payment retries be idempotent?",
+            "why_it_matters": "It controls duplicate side effects.",
+            "what_breaks_if_wrong": "A retry can create two payments.",
+            "tested_entity_id": "A-0001",
+            "recommended_default": None,
+            "recommended_default_basis": None,
+            "allowed_answers": ["confirm", "reject", "revise", "defer", "unknown"],
+        }
+    ),
+    MockScenario.INTERPRET_CONFIRM: _raw_json(
+        {
+            "proposed_events": [
+                {
+                    "event_type": "ASSUMPTION_TRANSITIONED",
+                    "target_ref": "A-0001",
+                    "payload": {
+                        "from": "provisional",
+                        "to": "locked",
+                        "reason": "User confirmed the active assumption.",
+                    },
+                },
+                {
+                    "event_type": "WORK_ITEM_STATUS_CHANGED",
+                    "target_ref": "W-0001",
+                    "payload": {
+                        "from": "active",
+                        "to": "answered",
+                        "reason": "Answer interpreted as confirm.",
+                    },
+                },
+            ],
+            "followup_required": False,
+            "warnings": [],
+        }
+    ),
+    MockScenario.INTERPRET_REJECT: _raw_json(
+        {
+            "proposed_events": [
+                {
+                    "event_type": "ASSUMPTION_TRANSITIONED",
+                    "target_ref": "A-0001",
+                    "payload": {
+                        "from": "candidate",
+                        "to": "rejected",
+                        "reason": "User rejected the assumption.",
+                    },
+                }
+            ],
+            "followup_required": False,
+            "warnings": [],
+        }
+    ),
+    MockScenario.INTERPRET_REVISE: _raw_json(
+        {
+            "proposed_events": [
+                {
+                    "event_type": "ASSUMPTION_TRANSITIONED",
+                    "target_ref": "A-0001",
+                    "payload": {
+                        "from": "locked",
+                        "to": "revised",
+                        "reason": "User supplied a corrected statement.",
+                        "prior_statement": "Payments require idempotency keys.",
+                        "new_statement": "Payment writes require idempotency keys.",
+                    },
+                }
+            ],
+            "followup_required": False,
+            "warnings": [],
+        }
+    ),
+    MockScenario.INTERPRET_DEFER: _raw_json(
+        {
+            "proposed_events": [
+                {
+                    "event_type": "WORK_ITEM_STATUS_CHANGED",
+                    "target_ref": "W-0001",
+                    "payload": {
+                        "from": "active",
+                        "to": "deferred",
+                        "reason": "User deferred the question.",
+                    },
+                }
+            ],
+            "followup_required": False,
+            "warnings": ["Question deferred, closure remains blocked if high blast radius."],
+        }
+    ),
+    MockScenario.INTERPRET_UNKNOWN: _raw_json(
+        {
+            "proposed_events": [
+                {
+                    "event_type": "RISK_CREATED",
+                    "target_ref": "tmp_risk_1",
+                    "payload": {
+                        "tmp_handle": "tmp_risk_1",
+                        "statement": "Idempotency behavior is unknown.",
+                        "severity": "high",
+                        "status": "open",
+                        "source_refs": ["A-0001"],
+                    },
+                },
+                {
+                    "event_type": "WORK_ITEM_STATUS_CHANGED",
+                    "target_ref": "W-0001",
+                    "payload": {
+                        "from": "active",
+                        "to": "deferred",
+                        "reason": "User answered unknown.",
+                    },
+                },
+            ],
+            "followup_required": False,
+            "warnings": ["Unknown answer routed to an open risk."],
+        }
+    ),
+    MockScenario.CONTRADICTION_AUDIT: _raw_json(
+        {
+            "findings": [
+                {
+                    "kind": "contradiction",
+                    "refs": ["A-0001", "A-0002"],
+                    "severity": "medium",
+                    "description": "One assumption requires retries, another implies single attempt only.",
+                }
+            ],
+            "missing_provenance": [],
+            "invalid_source_excerpts": [],
+            "unresolved_high_blast_radius": ["W-0001"],
+            "artifact_blockers": [],
+        }
+    ),
+    MockScenario.ARTIFACT_GENERATION: _raw_json(
+        {
+            "artifact_markdown": (
+                "# Final Artifact\n\n"
+                "## Locked Assumptions\n\n"
+                "- Payment writes require idempotency keys.\n\n"
+                "## Open Risk Register\n\n"
+                "- Idempotency behavior must remain visible until resolved.\n"
+            ),
+            "blocking_warnings": [],
+            "open_risk_register": [
+                {
+                    "id": "R-0001",
+                    "statement": "Idempotency behavior is unknown.",
+                    "severity": "high",
+                }
+            ],
+            "traceability_summary": [
+                {"entity_id": "A-0001", "source": "user_stated", "verified": True}
+            ],
+        }
+    ),
+    MockScenario.MALFORMED_JSON: '{"proposed_events": [',
+    MockScenario.ILLEGAL_TRANSITION: _raw_json(
+        {
+            "proposed_events": [
+                {
+                    "event_type": "ASSUMPTION_TRANSITIONED",
+                    "target_ref": "A-0001",
+                    "payload": {
+                        "from": "rejected",
+                        "to": "locked",
+                        "reason": "Deliberately illegal mock proposal.",
+                    },
+                }
+            ],
+            "followup_required": False,
+            "warnings": [],
+        }
+    ),
+    MockScenario.CREATION_WITH_DURABLE_ID: _raw_json(
+        {
+            "assumptions": [
+                {
+                    "id": "A-0001",
+                    "tmp_handle": "tmp_assumption_1",
+                    "statement": "This creation wrongly contains a durable ID.",
+                    "status": "candidate",
+                    "source_type": "model_inferred",
+                    "source_excerpt": None,
+                    "blast_radius": "high",
+                    "downstream_impact": "Identity ownership",
+                    "risk_if_wrong": "The model can appear to mint durable identity.",
+                }
+            ],
+            "work_items": [],
+            "risks": [],
+            "terms": [],
+            "decisions": [],
+            "contradictions": [],
+        }
+    ),
+}
+
+
+DEFAULT_SCENARIO_BY_JOB: dict[ModelJob, MockScenario] = {
+    ModelJob.INITIAL_EXTRACTION: MockScenario.INITIAL_EXTRACTION,
+    ModelJob.RANK_NEXT_WORK_ITEM: MockScenario.RANK_NEXT_WORK_ITEM,
+    ModelJob.INTERPRET_USER_ANSWER: MockScenario.INTERPRET_CONFIRM,
+    ModelJob.CONTRADICTION_AUDIT: MockScenario.CONTRADICTION_AUDIT,
+    ModelJob.ARTIFACT_GENERATION: MockScenario.ARTIFACT_GENERATION,
+}
+
+
+class DeterministicMockModel(ModelAdapter):
+    """Scripted model adapter with no network dependency."""
+
+    def complete(self, request: ModelRequest, *, scenario: str | None = None) -> str:
+        resolved = self._resolve_scenario(request, scenario)
+        return RESPONSES[resolved]
+
+    def _resolve_scenario(
+        self, request: ModelRequest, scenario: str | None
+    ) -> MockScenario:
+        if scenario is not None:
+            return MockScenario(scenario)
+        if request.job == ModelJob.INTERPRET_USER_ANSWER:
+            answer_class = request.payload.get("answer_class")
+            if answer_class is not None:
+                candidate = f"{ModelJob.INTERPRET_USER_ANSWER.value}:{answer_class}"
+                if candidate in {item.value for item in MockScenario}:
+                    return MockScenario(candidate)
+        return DEFAULT_SCENARIO_BY_JOB[request.job]
+
+
+DEFAULT_MODEL_ADAPTER: ModelAdapter = DeterministicMockModel()
