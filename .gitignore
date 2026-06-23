@@ -6,3 +6,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Local scratch sessions
+sessions/*
+!sessions/sample_session/
+!sessions/sample_session/**
