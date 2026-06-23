@@ -1,0 +1,224 @@
+{
+  "assumptions": [
+    {
+      "blast_radius": "high",
+      "created_event": "E-0004",
+      "downstream_impact": "Payment retry behavior",
+      "id": "A-0001",
+      "revision_history": [],
+      "risk_if_wrong": "Duplicate payment writes",
+      "source_excerpt": "Payments require idempotency keys.",
+      "source_excerpt_verified": true,
+      "source_type": "user_stated",
+      "statement": "Payments require idempotency keys.",
+      "status": "candidate",
+      "tested_by_work_item": null,
+      "updated_event": "E-0004",
+      "user_answer_events": []
+    },
+    {
+      "blast_radius": "medium",
+      "created_event": "E-0005",
+      "downstream_impact": "Operational resilience",
+      "id": "A-0002",
+      "revision_history": [],
+      "risk_if_wrong": "Incomplete incident behavior",
+      "source_excerpt": null,
+      "source_excerpt_verified": false,
+      "source_type": "model_inferred",
+      "statement": "The processor outage behavior needs an explicit decision.",
+      "status": "candidate",
+      "tested_by_work_item": null,
+      "updated_event": "E-0005",
+      "user_answer_events": []
+    },
+    {
+      "blast_radius": "medium",
+      "created_event": "E-0006",
+      "downstream_impact": "Service ownership",
+      "id": "A-0003",
+      "revision_history": [
+        {
+          "event_id": "E-0026",
+          "new_statement": "The billing worker owns payment write orchestration.",
+          "prior_statement": "The billing worker owns payment writes."
+        }
+      ],
+      "risk_if_wrong": "Wrong component receives write responsibility",
+      "source_excerpt": "The billing worker owns payment writes.",
+      "source_excerpt_verified": true,
+      "source_type": "user_stated",
+      "statement": "The billing worker owns payment write orchestration.",
+      "status": "revised",
+      "tested_by_work_item": null,
+      "updated_event": "E-0026",
+      "user_answer_events": []
+    },
+    {
+      "blast_radius": "high",
+      "created_event": "E-0007",
+      "downstream_impact": "Handoff safety",
+      "id": "A-0004",
+      "revision_history": [],
+      "risk_if_wrong": "The artifact may hide unresolved risk",
+      "source_excerpt": "unresolved high-risk questions must stay visible",
+      "source_excerpt_verified": true,
+      "source_type": "user_stated",
+      "statement": "Unresolved high-risk questions must stay visible after force close.",
+      "status": "locked",
+      "tested_by_work_item": null,
+      "updated_event": "E-0031",
+      "user_answer_events": []
+    }
+  ],
+  "contradictions": [
+    {
+      "created_event": "E-0038",
+      "description": "One assumption requires retries, another implies single attempt only.",
+      "id": "C-0001",
+      "refs": [
+        "A-0001",
+        "A-0002"
+      ],
+      "resolution_work_item": "W-0005",
+      "severity": "medium",
+      "status": "open",
+      "updated_event": "E-0038"
+    }
+  ],
+  "decisions": [],
+  "force_closed": true,
+  "force_closed_event": "E-0040",
+  "risks": [
+    {
+      "created_event": "E-0016",
+      "id": "R-0001",
+      "severity": "high",
+      "source_refs": [
+        "A-0001"
+      ],
+      "statement": "Idempotency behavior is unknown.",
+      "status": "open",
+      "updated_event": "E-0016"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "session_id": "sample_session",
+  "source_hash": "f1928178be259feea300aecdffd9eb60a07bce650516f8562de8f4cc4d5f2e25",
+  "terms": [],
+  "work_items": [
+    {
+      "answer_options": [
+        "confirm",
+        "reject",
+        "revise",
+        "defer",
+        "unknown"
+      ],
+      "blast_radius": "high",
+      "blocks_closure": true,
+      "created_event": "E-0008",
+      "deferred_reason": null,
+      "id": "W-0001",
+      "kind": "resolve_assumption",
+      "question": "Should payment retries be idempotent?",
+      "recommended_default": null,
+      "recommended_default_basis": null,
+      "status": "deferred",
+      "target_entity": "A-0001",
+      "updated_event": "E-0017",
+      "what_breaks_if_wrong": "A retry can create duplicate payments.",
+      "why_it_matters": "Duplicate payment writes are high impact."
+    },
+    {
+      "answer_options": [
+        "confirm",
+        "reject",
+        "revise",
+        "defer",
+        "unknown"
+      ],
+      "blast_radius": "medium",
+      "blocks_closure": false,
+      "created_event": "E-0009",
+      "deferred_reason": "processor behavior decision deferred",
+      "id": "W-0002",
+      "kind": "resolve_assumption",
+      "question": "What should happen during processor outages?",
+      "recommended_default": null,
+      "recommended_default_basis": null,
+      "status": "deferred",
+      "target_entity": "A-0002",
+      "updated_event": "E-0018",
+      "what_breaks_if_wrong": "Operators may infer the wrong outage behavior.",
+      "why_it_matters": "Incident behavior affects operations."
+    },
+    {
+      "answer_options": [
+        "confirm",
+        "reject",
+        "revise",
+        "defer",
+        "unknown"
+      ],
+      "blast_radius": "medium",
+      "blocks_closure": false,
+      "created_event": "E-0010",
+      "deferred_reason": null,
+      "id": "W-0003",
+      "kind": "resolve_assumption",
+      "question": "Does the billing worker own payment write orchestration?",
+      "recommended_default": null,
+      "recommended_default_basis": null,
+      "status": "resolved",
+      "target_entity": "A-0003",
+      "updated_event": "E-0025",
+      "what_breaks_if_wrong": "The wrong service may own payment writes.",
+      "why_it_matters": "Ownership shapes implementation boundaries."
+    },
+    {
+      "answer_options": [
+        "confirm",
+        "reject",
+        "revise",
+        "defer",
+        "unknown"
+      ],
+      "blast_radius": "high",
+      "blocks_closure": true,
+      "created_event": "E-0011",
+      "deferred_reason": null,
+      "id": "W-0004",
+      "kind": "resolve_assumption",
+      "question": "Must unresolved high-risk questions stay visible after force close?",
+      "recommended_default": null,
+      "recommended_default_basis": null,
+      "status": "resolved",
+      "target_entity": "A-0004",
+      "updated_event": "E-0033",
+      "what_breaks_if_wrong": "A downstream builder may trust an unsafe artifact.",
+      "why_it_matters": "Closure must not hide unresolved risk."
+    },
+    {
+      "answer_options": [
+        "revise",
+        "defer",
+        "unknown"
+      ],
+      "blast_radius": "medium",
+      "blocks_closure": false,
+      "created_event": "E-0039",
+      "deferred_reason": null,
+      "id": "W-0005",
+      "kind": "resolve_contradiction",
+      "question": "Resolve contradiction: One assumption requires retries, another implies single attempt only.",
+      "recommended_default": null,
+      "recommended_default_basis": null,
+      "status": "open",
+      "target_entity": "C-0001",
+      "updated_event": "E-0039",
+      "what_breaks_if_wrong": "Downstream builders may receive incompatible facts.",
+      "why_it_matters": "Contradictions block reliable implementation."
+    }
+  ]
+}

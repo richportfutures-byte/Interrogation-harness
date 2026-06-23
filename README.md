@@ -7,10 +7,10 @@ ledger is a pure projection rebuilt from it. See SPEC.md for the canonical speci
 
 ## Status
 
-This repository is built in stages. Stage 1 delivers the project scaffold and the
-type/schema layer only (object model records, status enums, event envelope, and the
-closed event-type set). Storage, projection, validation, engines, and the CLI arrive in
-later stages.
+This repository implements the local v1 harness described in SPEC.md: file-backed
+sessions, append-only events, deterministic projection rebuilds, validation, offline
+mock model jobs, engines, a CLI, the Section 20 acceptance suite, and a committed
+sample session.
 
 ## Requirements
 
@@ -43,3 +43,47 @@ uv run pytest
 ```
 
 (or simply `pytest` inside an activated virtual environment).
+
+## CLI
+
+The CLI is available as a Python module:
+
+```
+uv run python -m interrogation_harness --root sessions show-ledger sample_session
+uv run python -m interrogation_harness --root sessions show-open-work sample_session
+uv run python -m interrogation_harness --root sessions resume-session sample_session
+```
+
+The default root is `sessions`, so the shorter form works in an installed or activated
+environment:
+
+```
+python -m interrogation_harness resume-session sample_session
+```
+
+## Sample Session
+
+The committed sample lives at `sessions/sample_session/` and contains:
+
+```
+source.md
+events.jsonl
+ledger.json
+final_artifact.md
+```
+
+Regenerate it deterministically from the real harness operations:
+
+```
+uv run python scripts/build_sample_session.py
+```
+
+The builder uses a fixed clock and drives the same event log, validator, projector,
+audit, force-close, and artifact paths used by the CLI. It does not hand-write the
+session files.
+
+The sample demonstrates the Section 24 requirements: at least three candidate
+assumptions, a model-inferred assumption, verified user-stated provenance, a high
+blast-radius work item, an unknown answer routed to an open risk, a deferred item, a
+revised assumption, a rejected illegal transition, and a force-closed final artifact
+that keeps unresolved high-risk work visible.
