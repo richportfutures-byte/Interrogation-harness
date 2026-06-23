@@ -289,6 +289,8 @@ class DeterministicMockModel(ModelAdapter):
 
     def complete(self, request: ModelRequest, *, scenario: str | None = None) -> str:
         resolved = self._resolve_scenario(request, scenario)
+        if resolved == MockScenario.INTERPRET_CONFIRM:
+            return _interpret_confirm_response(request)
         return RESPONSES[resolved]
 
     def _resolve_scenario(
@@ -306,3 +308,52 @@ class DeterministicMockModel(ModelAdapter):
 
 
 DEFAULT_MODEL_ADAPTER: ModelAdapter = DeterministicMockModel()
+
+
+def _interpret_confirm_response(request: ModelRequest) -> str:
+    active = request.payload.get("active_work_item")
+    projection = request.payload.get("projection")
+    target = _mapping_get(active, "target_entity") or "A-0001"
+    work_item_id = _mapping_get(active, "id") or "W-0001"
+    assumption = _find_projection_item(projection, "assumptions", target)
+    work_item = _find_projection_item(projection, "work_items", work_item_id)
+    assumption_from = _mapping_get(assumption, "status") or "provisional"
+    work_from = _mapping_get(work_item, "status") or _mapping_get(active, "status") or "active"
+    return _raw_json(
+        {
+            "proposed_events": [
+                {
+                    "event_type": "ASSUMPTION_TRANSITIONED",
+                    "target_ref": target,
+                    "payload": {
+                        "from": assumption_from,
+                        "to": "locked",
+                        "reason": "User confirmed the active assumption.",
+                    },
+                },
+                {
+                    "event_type": "WORK_ITEM_STATUS_CHANGED",
+                    "target_ref": work_item_id,
+                    "payload": {
+                        "from": work_from,
+                        "to": "answered",
+                        "reason": "Answer interpreted as confirm.",
+                    },
+                },
+            ],
+            "followup_required": False,
+            "warnings": [],
+        }
+    )
+
+
+def _mapping_get(value, key: str):
+    return value.get(key) if hasattr(value, "get") else None
+
+
+def _find_projection_item(projection, collection: str, ident: str):
+    items = _mapping_get(projection, collection) or ()
+    for item in items:
+        if _mapping_get(item, "id") == ident:
+            return item
+    return None
