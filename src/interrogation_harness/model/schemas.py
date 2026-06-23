@@ -123,6 +123,16 @@ _INTAKE_WORK_ITEM_FIELDS = {
     "recommended_default_basis",
     "blocking_reason",
 }
+_INTERPRET_ASSUMPTION_FIELDS = _ASSUMPTION_FIELDS | {
+    "evidence_status",
+    "depends_on",
+}
+_INTERPRET_WORK_ITEM_FIELDS = _WORK_ITEM_FIELDS | {
+    "derived_question_label",
+    "gap_type",
+    "source_assumption_refs",
+    "blocking_reason",
+}
 
 
 def validate_output_schema(job: ModelJob | str, data: Any) -> dict[str, Any]:
@@ -391,11 +401,14 @@ def _validate_rank_next_work_item(data: dict[str, Any], errors: list[str]) -> No
 
 
 def _validate_interpret_user_answer(data: dict[str, Any], errors: list[str]) -> None:
-    keys = {"proposed_events", "followup_required", "warnings"}
-    _exact_keys(data, keys, "interpret_user_answer", errors)
-    _require_fields(data, keys, "interpret_user_answer", errors)
+    required = {"proposed_events", "followup_required", "warnings"}
+    allowed = required | {"revision_required"}
+    _known_keys(data, allowed, "interpret_user_answer", errors)
+    _require_fields(data, required, "interpret_user_answer", errors)
     _require_list(data, "proposed_events", "interpret_user_answer", errors)
     _require_bool(data, "followup_required", "interpret_user_answer", errors)
+    if "revision_required" in data:
+        _require_bool(data, "revision_required", "interpret_user_answer", errors)
     _require_list(data, "warnings", "interpret_user_answer", errors)
     for index, item in enumerate(data.get("proposed_events", [])):
         path = f"proposed_events[{index}]"
@@ -459,12 +472,12 @@ def _validate_creation_event_payload(
     event_type: str, payload: dict[str, Any], path: str, errors: list[str]
 ) -> None:
     fields_by_event = {
-        EventType.ASSUMPTION_CREATED.value: _ASSUMPTION_FIELDS,
+        EventType.ASSUMPTION_CREATED.value: _INTERPRET_ASSUMPTION_FIELDS,
         EventType.TERM_CREATED.value: _TERM_FIELDS,
         EventType.DECISION_CREATED.value: _DECISION_FIELDS,
         EventType.RISK_CREATED.value: _RISK_FIELDS,
         EventType.CONTRADICTION_CREATED.value: _CONTRADICTION_FIELDS,
-        EventType.WORK_ITEM_CREATED.value: _WORK_ITEM_FIELDS,
+        EventType.WORK_ITEM_CREATED.value: _INTERPRET_WORK_ITEM_FIELDS,
     }
     _creation_object(payload, fields_by_event[event_type], f"{path}.payload", errors)
     if event_type == EventType.ASSUMPTION_CREATED.value:
@@ -472,11 +485,36 @@ def _validate_creation_event_payload(
         _enum(payload, "status", AssumptionStatus, f"{path}.payload", errors)
         _enum(payload, "source_type", SourceType, f"{path}.payload", errors)
         _enum(payload, "blast_radius", BlastRadius, f"{path}.payload", errors)
+        if "evidence_status" in payload:
+            _enum(payload, "evidence_status", EvidenceStatus, f"{path}.payload", errors)
+        if "depends_on" in payload:
+            _require_list(payload, "depends_on", f"{path}.payload", errors)
+        if payload.get("source_type") == SourceType.EXTERNAL_REQUIRED.value:
+            if not _nonempty_string(payload.get("external_fact")):
+                errors.append(f"{path}.payload.external_fact is required for external_required")
     elif event_type == EventType.WORK_ITEM_CREATED.value:
         _require_fields(payload, {"tmp_handle", "kind", "question", "why_it_matters", "what_breaks_if_wrong", "blast_radius", "blocks_closure"}, f"{path}.payload", errors)
         _enum(payload, "kind", WorkItemKind, f"{path}.payload", errors)
         _enum(payload, "blast_radius", BlastRadius, f"{path}.payload", errors)
         _require_bool(payload, "blocks_closure", f"{path}.payload", errors)
+        if payload.get("derived_question_label") is not None:
+            _label(
+                payload.get("derived_question_label"),
+                _DQ_LABEL,
+                f"{path}.payload.derived_question_label",
+                "DQ-NN",
+                errors,
+            )
+        if payload.get("gap_type") is not None:
+            _enum_value(payload.get("gap_type"), GapType, f"{path}.payload.gap_type", errors)
+        if "source_assumption_refs" in payload:
+            _require_list(payload, "source_assumption_refs", f"{path}.payload", errors)
+        if "related_temp_refs" in payload:
+            _require_list(payload, "related_temp_refs", f"{path}.payload", errors)
+        if "answer_options" in payload:
+            _require_list(payload, "answer_options", f"{path}.payload", errors)
+            for option in payload.get("answer_options", []):
+                _enum_value(option, AnswerClass, f"{path}.payload.answer_options", errors)
     elif event_type == EventType.RISK_CREATED.value:
         _require_fields(payload, {"tmp_handle", "statement", "severity", "status"}, f"{path}.payload", errors)
         _enum(payload, "severity", Severity, f"{path}.payload", errors)
@@ -526,6 +564,14 @@ def _exact_keys(
     unknown = set(item) - required_keys
     if missing:
         errors.append(f"{path} missing required fields: {sorted(missing)!r}")
+    if unknown:
+        errors.append(f"{path} has unknown fields: {sorted(unknown)!r}")
+
+
+def _known_keys(
+    item: dict[str, Any], allowed_keys: set[str], path: str, errors: list[str]
+) -> None:
+    unknown = set(item) - allowed_keys
     if unknown:
         errors.append(f"{path} has unknown fields: {sorted(unknown)!r}")
 

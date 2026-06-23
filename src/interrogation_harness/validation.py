@@ -479,7 +479,6 @@ class ModelContractValidator:
         source_markdown: str,
     ) -> list[dict[str, Any]]:
         proposed = parsed["proposed_events"]
-        self._semantic_interpret(proposed, refs)
         handles = [
             event["payload"]["tmp_handle"]
             for event in proposed
@@ -487,6 +486,7 @@ class ModelContractValidator:
         ]
         ref_map = IdAllocator.from_ledger(refs.ledger).allocate(handles)
         temp_refs = set(ref_map)
+        self._semantic_interpret(parsed, refs, temp_refs)
         events: list[dict[str, Any]] = []
         for item in proposed:
             event_type = EventType(item["event_type"])
@@ -502,13 +502,20 @@ class ModelContractValidator:
         return events
 
     def _semantic_interpret(
-        self, proposed_events: list[dict[str, Any]], refs: "_ProjectionRefs"
+        self, parsed: dict[str, Any], refs: "_ProjectionRefs", temp_refs: set[str]
     ) -> None:
+        proposed_events = parsed["proposed_events"]
+        is_v2 = refs.ledger.get("protocol_version") == "2.0.0"
+        v2_state = _InterpretV2State.from_refs(parsed, refs) if is_v2 else None
         statuses = refs.status_map()
         for item in proposed_events:
             event_type = item["event_type"]
             if event_type in CREATION_EVENT_TYPES:
-                self._semantic_creation_refs(item["payload"], refs)
+                self._semantic_creation_refs(item["payload"], refs, temp_refs)
+                if v2_state is not None:
+                    _semantic_interpret_creation_v2(event_type, item["payload"], v2_state)
+                else:
+                    _reject_v2_interpret_creation_fields(event_type, item["payload"])
                 continue
             target = item["target_ref"]
             if not refs.exists(target):
@@ -518,6 +525,8 @@ class ModelContractValidator:
                 raise SemanticValidationError(
                     f"{event_type} target has wrong entity type: {target!r}"
                 )
+            if v2_state is not None:
+                _semantic_interpret_transition_v2(event_type, target, item["payload"], v2_state)
             payload = item["payload"]
             current = statuses.get(target)
             if payload.get("from") != current:
@@ -539,17 +548,29 @@ class ModelContractValidator:
                 raise SemanticValidationError(
                     f"resolution work item does not exist: {resolution_work_item!r}"
                 )
+        if v2_state is not None:
+            v2_state.finalize()
 
-    def _semantic_creation_refs(self, payload: dict[str, Any], refs: "_ProjectionRefs") -> None:
-        for value in _walk_values(payload):
-            if IdAllocator.is_durable_id(value) and not refs.exists(value):
-                raise SemanticValidationError(f"durable reference does not exist: {value!r}")
+    def _semantic_creation_refs(
+        self, payload: dict[str, Any], refs: "_ProjectionRefs", temp_refs: set[str]
+    ) -> None:
         if payload.get("recommended_default") is not None:
             basis = payload.get("recommended_default_basis")
-            if basis is None or not refs.exists(basis):
+            if basis is None or not _ref_exists_or_temp(basis, refs, temp_refs):
                 raise SemanticValidationError(
                     f"recommended default basis does not exist: {basis!r}"
                 )
+        elif payload.get("recommended_default_basis") is not None:
+            basis = payload.get("recommended_default_basis")
+            if not _ref_exists_or_temp(basis, refs, temp_refs):
+                raise SemanticValidationError(
+                    f"recommended default basis does not exist: {basis!r}"
+                )
+        for value in _walk_values(payload):
+            if IdAllocator.is_durable_id(value) and not refs.exists(value):
+                raise SemanticValidationError(f"durable reference does not exist: {value!r}")
+            if IdAllocator.is_temp_handle(value) and value not in temp_refs:
+                raise SemanticValidationError(f"temp reference does not exist: {value!r}")
 
     def _creation_payload_from_event(
         self,
@@ -560,10 +581,21 @@ class ModelContractValidator:
         temp_refs: set[str],
         source_markdown: str,
     ) -> dict[str, Any]:
-        out = _without_keys(payload, {"tmp_handle", "related_temp_refs", "external_fact"})
+        is_v2 = refs.ledger.get("protocol_version") == "2.0.0"
+        out = _without_keys(
+            payload,
+            {"tmp_handle", "related_temp_refs", "source_assumption_refs", "depends_on", "external_fact"},
+        )
         out["id"] = ref_map[payload["tmp_handle"]]
         if event_type == EventType.ASSUMPTION_CREATED:
             out = apply_assumption_provenance(out, source_markdown)
+            if is_v2:
+                out = _finalize_evidence_status(out)
+                out["premise_origin"] = "answer"
+                out["depends_on"] = [
+                    _resolve_creation_ref(value, refs, ref_map, temp_refs)
+                    for value in payload.get("depends_on", [])
+                ]
         if event_type == EventType.RISK_CREATED:
             out["source_refs"] = [
                 _resolve_creation_ref(value, refs, ref_map, temp_refs)
@@ -575,9 +607,21 @@ class ModelContractValidator:
                 for value in payload.get("refs", [])
             ]
         if event_type == EventType.WORK_ITEM_CREATED:
+            if is_v2:
+                _validate_intake_work_item(payload)
             related = payload.get("related_temp_refs", [])
             if related:
                 out["target_entity"] = _resolve_creation_ref(related[0], refs, ref_map, temp_refs)
+            if is_v2:
+                out["source_assumption_ids"] = [
+                    _resolve_creation_ref(value, refs, ref_map, temp_refs)
+                    for value in payload.get("source_assumption_refs", [])
+                ]
+            basis = payload.get("recommended_default_basis")
+            if basis is not None:
+                out["recommended_default_basis"] = _resolve_creation_ref(
+                    basis, refs, ref_map, temp_refs
+                )
         return out
 
     def _semantic_audit(self, parsed: dict[str, Any], refs: "_ProjectionRefs") -> None:
@@ -736,6 +780,149 @@ class _ProjectionRefs:
         }
 
 
+@dataclass
+class _InterpretV2State:
+    """Semantic facts tracked while validating one V2 answer interpretation."""
+
+    followup_required: bool
+    revision_required: bool
+    active_work_item: dict[str, Any]
+    active_related_refs: set[str]
+    revision_transition_seen: bool = False
+    representation_seen: bool = False
+    locked_with_followup: bool = False
+
+    @classmethod
+    def from_refs(cls, parsed: dict[str, Any], refs: _ProjectionRefs) -> "_InterpretV2State":
+        active = [
+            item
+            for item in refs.ledger.get("work_items", [])
+            if item.get("status") == "active"
+        ]
+        if len(active) != 1:
+            raise SemanticValidationError(
+                f"interpret_user_answer requires exactly one active work item, found {len(active)}"
+            )
+        if "revision_required" not in parsed:
+            raise SemanticValidationError(
+                "V2 interpret_user_answer requires revision_required"
+            )
+        revision_required = parsed.get("revision_required")
+        if not isinstance(revision_required, bool):
+            raise SemanticValidationError("revision_required must be a boolean")
+        followup_required = parsed.get("followup_required")
+        if not isinstance(followup_required, bool):
+            raise SemanticValidationError("followup_required must be a boolean")
+        return cls(
+            followup_required=followup_required,
+            revision_required=revision_required,
+            active_work_item=active[0],
+            active_related_refs=_active_work_refs(active[0]),
+        )
+
+    @property
+    def active_work_id(self) -> str:
+        return self.active_work_item["id"]
+
+    def finalize(self) -> None:
+        if self.locked_with_followup:
+            raise SemanticValidationError(
+                "cannot lock an assumption while followup_required is true"
+            )
+        if self.revision_required and not (
+            self.revision_transition_seen or self.representation_seen
+        ):
+            raise SemanticValidationError(
+                "revision_required requires a revise transition or represented blocker"
+            )
+        if not self.revision_required and self.revision_transition_seen:
+            raise SemanticValidationError(
+                "revision transition requires revision_required true"
+            )
+
+
+def _active_work_refs(active_work_item: dict[str, Any]) -> set[str]:
+    refs: set[str] = set()
+    target = active_work_item.get("target_entity")
+    if isinstance(target, str):
+        refs.add(target)
+    for value in active_work_item.get("source_assumption_ids", []):
+        if isinstance(value, str):
+            refs.add(value)
+    return refs
+
+
+def _semantic_interpret_creation_v2(
+    event_type: str, payload: dict[str, Any], state: _InterpretV2State
+) -> None:
+    if event_type == EventType.ASSUMPTION_CREATED.value:
+        if state.revision_required:
+            depends_on = {value for value in payload.get("depends_on", []) if isinstance(value, str)}
+            if state.active_related_refs and not (depends_on & state.active_related_refs):
+                raise SemanticValidationError(
+                    "replacement assumption must link to the affected active-work entity"
+                )
+            if depends_on & state.active_related_refs:
+                state.representation_seen = True
+        return
+    if event_type == EventType.WORK_ITEM_CREATED.value:
+        _validate_intake_work_item(payload)
+        state.representation_seen = True
+        return
+    if event_type in {
+        EventType.CONTRADICTION_CREATED.value,
+        EventType.RISK_CREATED.value,
+    }:
+        state.representation_seen = True
+
+
+def _reject_v2_interpret_creation_fields(event_type: str, payload: dict[str, Any]) -> None:
+    v2_fields_by_event = {
+        EventType.ASSUMPTION_CREATED.value: {"evidence_status", "depends_on"},
+        EventType.WORK_ITEM_CREATED.value: {
+            "derived_question_label",
+            "gap_type",
+            "source_assumption_refs",
+            "blocking_reason",
+        },
+    }
+    v2_fields = v2_fields_by_event.get(event_type, set())
+    present = sorted(v2_fields & set(payload))
+    if present:
+        raise SemanticValidationError(
+            f"V2-only interpret fields are not valid for V1 sessions: {present!r}"
+        )
+
+
+def _semantic_interpret_transition_v2(
+    event_type: str,
+    target: str,
+    payload: dict[str, Any],
+    state: _InterpretV2State,
+) -> None:
+    if event_type == EventType.WORK_ITEM_STATUS_CHANGED.value:
+        if target != state.active_work_id:
+            raise SemanticValidationError(
+                f"work item transition must target active work item: {state.active_work_id}"
+            )
+        if payload.get("to") == "blocked":
+            state.representation_seen = True
+        return
+
+    if state.active_related_refs and target not in state.active_related_refs:
+        raise SemanticValidationError(
+            f"transition target is not linked to active work item: {target!r}"
+        )
+    if payload.get("to") == "locked" and state.followup_required:
+        state.locked_with_followup = True
+    if payload.get("to") == "revised":
+        state.revision_transition_seen = True
+        if not payload.get("prior_statement") or not payload.get("new_statement"):
+            raise SemanticValidationError(
+                "revision transition requires prior_statement and new_statement"
+            )
+
+
 def _prepared(
     event_type: EventType,
     payload: dict[str, Any],
@@ -821,6 +1008,10 @@ def _resolve_creation_ref(
     if refs.exists(value):
         return value
     raise SemanticValidationError(f"reference does not exist: {value!r}")
+
+
+def _ref_exists_or_temp(value: Any, refs: _ProjectionRefs, temp_refs: set[str]) -> bool:
+    return refs.exists(value) or (isinstance(value, str) and value in temp_refs)
 
 
 def _check_recommended_default(parsed: dict[str, Any], refs: _ProjectionRefs) -> None:

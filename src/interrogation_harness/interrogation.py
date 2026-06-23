@@ -112,7 +112,11 @@ class InterrogationEngine:
             idempotency_key=ids.idempotency_key,
             timestamp=ids.timestamp,
             request_payload=payload,
-            source_markdown=self.ops.store.read_source() if self.ops.store.source_exists() else "",
+            source_markdown=(
+                answer_text
+                if ledger.get("protocol_version") == "2.0.0"
+                else self.ops.store.read_source() if self.ops.store.source_exists() else ""
+            ),
         )
         if result.accepted:
             self._resolve_answered_work_items(ids)

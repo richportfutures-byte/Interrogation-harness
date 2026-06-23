@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import Any
 
@@ -412,8 +413,8 @@ class DeterministicMockModel(ModelAdapter):
     def complete(self, request: ModelRequest, *, scenario: str | None = None) -> str:
         resolved = self._resolve_scenario(request, scenario)
         if resolved == MockScenario.INTERPRET_CONFIRM:
-            return _interpret_confirm_response(request)
-        return RESPONSES[resolved]
+            return _with_v2_revision_required(request, _interpret_confirm_response(request))
+        return _with_v2_revision_required(request, RESPONSES[resolved])
 
     def _resolve_scenario(
         self, request: ModelRequest, scenario: str | None
@@ -479,3 +480,19 @@ def _find_projection_item(projection, collection: str, ident: str):
         if _mapping_get(item, "id") == ident:
             return item
     return None
+
+
+def _with_v2_revision_required(request: ModelRequest, raw: str) -> str:
+    if request.job != ModelJob.INTERPRET_USER_ANSWER:
+        return raw
+    projection = request.payload.get("projection")
+    if _mapping_get(projection, "protocol_version") != "2.0.0":
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if isinstance(parsed, dict) and "revision_required" not in parsed:
+        parsed["revision_required"] = False
+        return _raw_json(parsed)
+    return raw

@@ -344,11 +344,15 @@ Proposed transition payloads:
 
 Semantic validation:
 - Requires exactly one active work item in the projection.
+- The output schema remains V1-compatible, but V2 semantic validation requires `revision_required`.
+- In V2, `WORK_ITEM_STATUS_CHANGED` proposals may target only the active work item.
 - Cannot lock an assumption unless the active answer clearly supports the lock. In practice the harness enforces this structurally: a lock transition (`-> locked`) is rejected when `followup_required == true`.
 - Ambiguous answers must produce follow-up work, defer, blocked state, or open risk.
 - `unknown` must not stall: it must defer, block with reason, create open risk, or create external validation work.
 - `revision_required == true` must be accompanied by a revise transition (`-> revised`) carrying `prior_statement` and `new_statement`, or by a blocker work item. It may not be accompanied by a silent overwrite. `revision_required == false` may not carry a revise transition.
 - Revision triggers cannot silently overwrite locked or provisional facts; the existing state machine plus the revise-preserves-prior rule enforce this.
+- V2 answer-origin assumption creations are stamped by the harness with `premise_origin = "answer"`, verify `user_stated` excerpts against the respondent answer text, and finalize `evidence_status` per Decision D6.
+- V2 answer-origin work item creations follow Decision D5 and resolve `related_temp_refs`, `source_assumption_refs`, and `recommended_default_basis` before projection.
 - The model may propose events; the harness mints IDs and applies only after validation.
 
 Rejection examples:
