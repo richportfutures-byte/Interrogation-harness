@@ -26,6 +26,7 @@ These are the concrete corrections this revision makes. Each is a binding decisi
 3. **All V2 fields are omit-if-null, and the four V2 ledger-level fields appear only for V2 sessions.** A V1 session produces byte-identical `ledger.json` and `events.jsonl` exactly as today. See Decision D3 and Section 2.5.
 4. **The "premise blocker" predicate used by ranking and ask-next is defined concretely** in terms of `blocks_closure`, and the gap categories are enforced at creation time to set `blocks_closure` or a `blocking_reason`. See Decision D4 and Section 6.
 5. **Mock policy is tightened.** V2 scenarios are static named entries with explicit raw JSON. The existing dynamic `interpret confirm` helper MUST NOT be extended for V2. See Section 8.
+6. **Pass A ambiguities are locked.** Three points surfaced during the intake pass are now decided in one place: the `blocking_reason` rule (D5), `evidence_status` finalization (D6), and `run-intake` V1 behavior (D7). The body sections (4.1, 6.3, 1, 7) match these decisions.
 
 ## 0.2 Locked Decisions
 
@@ -44,6 +45,26 @@ V2 blind-spot audits write `AUDIT_RUN.payload.audit_type = "blind_spot"`. V1 con
 
 **D4. Premise blocker predicate.**
 A work item is a premise blocker iff it is unresolved (status not `resolved`) and `blocks_closure == true`. In V2, every `blast_radius == "high"` work item has `blocks_closure == true`, and a `medium` work item has `blocks_closure == true` only when a `blocking_reason` is present. The gap categories in Section 6.2 are enforced at creation time (by intake and by audit conversion) to set `blocks_closure` or a `blocking_reason`, so ranking and ask-next key on the single concrete signal `blocks_closure`.
+
+**D5. blocking_reason rule (canonical).**
+This is the single authoritative statement of when `blocks_closure` is set and when `blocking_reason` is required. Sections 4.1 and 6.3 restate it; they do not extend it.
+- `high` blast-radius work always has `blocks_closure == true`. A `high` item does not require `blocking_reason`: the blast radius alone is sufficient, and `blocking_reason` is optional for it.
+- `medium` blast-radius work may set `blocks_closure == true`; if it does, `blocking_reason` is required and must be a non-empty string. A `medium` item with `blocks_closure == false` does not require `blocking_reason`.
+- `low` blast-radius work does not block closure (`blocks_closure == false`) unless a later explicit rule allows it. No such rule exists in V2 yet, so a `low` item that sets `blocks_closure == true` is rejected.
+- Rejections: `high` with `blocks_closure == false`; `medium` with `blocks_closure == true` and a missing or empty `blocking_reason`; `low` with `blocks_closure == true`.
+
+**D6. evidence_status finalization (canonical).**
+`evidence_status` is harness-finalized after provenance validation (Section 11 of SPEC.md). The model may propose `evidence_status`, but the harness normalizes it so it can never contradict final provenance. Finalization, applied at apply time on the creation payload:
+- If `source_type == user_stated` and the excerpt verifies: final `evidence_status = verified_user_stated`.
+- If `source_type == user_stated` and the excerpt fails verification: the harness downgrades `source_type` to `model_inferred`, sets `source_excerpt_verified = false`, and sets final `evidence_status = model_inferred`.
+- If `source_type == model_inferred`: final `evidence_status = model_inferred`, unless the model explicitly marked the item `open_dependency`, `external_validation_required`, or `undecidable`, in which case that value is preserved.
+- Invariant: the ledger MUST NEVER contain `source_type == model_inferred` with `evidence_status == verified_user_stated`.
+
+**D7. run-intake V1 behavior (canonical).**
+- `run-intake SESSION_ID` on a V1 session MUST refuse with a clear error and append no events.
+- `run-intake SESSION_ID --upgrade-to-v2` is the only allowed V1-to-V2 upgrade path.
+- No other command may silently upgrade a V1 session.
+- `run-initial-extraction` remains the V1 extraction command for V1 sessions; it aliases to intake only for sessions already marked V2.
 
 ## 1. V1/V2 Compatibility and Session Activation
 
@@ -74,7 +95,7 @@ A V1 session is not automatically migrated. It may remain V1 forever, or it may 
 run-intake SESSION_ID --upgrade-to-v2
 ```
 
-That operation must append accepted V2 intake events through the existing model-response and creation-event flow. No automatic migration based on source contents, protocol docs, or current code version is allowed.
+That operation must append accepted V2 intake events through the existing model-response and creation-event flow. No automatic migration based on source contents, protocol docs, or current code version is allowed. `run-intake` without `--upgrade-to-v2` on a V1 session MUST refuse and append no events (Decision D7).
 
 ## 2. Ledger and Entity Changes
 
@@ -227,7 +248,7 @@ Assumption creation additions:
 | `blast_radius` | yes | string | no | `high`, `medium`, `low` |
 | `downstream_impact` | yes | string | no | Non-empty |
 | `risk_if_wrong` | yes | string | no | Non-empty |
-| `evidence_status` | yes | string | no | V2 evidence enum |
+| `evidence_status` | yes | string | no | V2 evidence enum; proposed by the model, harness-finalized per Decision D6 |
 | `depends_on` | optional | list | no | Temp handles or existing durable IDs only |
 
 Work item creation additions:
@@ -241,25 +262,25 @@ Work item creation additions:
 | `why_it_matters` | yes | string | no | Non-empty |
 | `what_breaks_if_wrong` | yes | string | no | Non-empty |
 | `blast_radius` | yes | string | no | `high`, `medium`, `low` |
-| `blocks_closure` | yes | boolean | no | Must be true when blast radius is high |
+| `blocks_closure` | yes | boolean | no | Must be true for high; false for low; optional for medium (Decision D5) |
 | `gap_type` | optional | string | yes | V2 gap enum |
 | `related_temp_refs` | optional | list | no | Temp handles or existing durable IDs only |
 | `source_assumption_refs` | optional | list | no | Must resolve after minting |
 | `answer_options` | optional | list | no | Existing answer enum only |
 | `recommended_default` | optional | string | yes | Requires valid basis when non-null |
 | `recommended_default_basis` | optional | string | yes | Existing durable ref or same-batch temp ref |
-| `blocking_reason` | optional | string | yes | Required when `blocks_closure` is true for medium blast radius |
+| `blocking_reason` | optional | string | yes | Required and non-empty only for medium work that sets `blocks_closure: true`; optional for high; not applicable to low (Decision D5) |
 
 Semantic validation:
 - No durable ID may appear in an entity creation identity field.
 - Temp handles must be unique within the response.
 - Every temp or durable reference must resolve after applying the accepted batch.
 - `user_stated` excerpts are verified by existing provenance rules.
-- High blast-radius work must block closure.
-- A `medium` work item that sets `blocks_closure == true` must carry a `blocking_reason`.
+- `blocks_closure` and `blocking_reason` follow Decision D5: `high` must block closure (no `blocking_reason` required); `medium` that blocks closure requires a non-empty `blocking_reason`; `low` must not block closure.
 - Every `DQ` work item must reference at least one source assumption unless `gap_type == "blind_spot"`.
 - Visible contradictions in intake must create either a contradiction entity or a blocking work item.
-- On accept, the harness stamps `intake_label`, `premise_origin = "intake"`, `evidence_status`, and resolved `depends_on` onto assumption creation payloads, and `derived_question_label`, `gap_type`, resolved `source_assumption_ids`, and `blocking_reason` onto work item creation payloads. It stores the validated `session_frame` on the accepted `MODEL_RESPONSE_RECORDED.payload`.
+- `evidence_status` is finalized by the harness per Decision D6, after provenance verification, so it can never contradict final `source_type` and `source_excerpt_verified`.
+- On accept, the harness stamps `intake_label`, `premise_origin = "intake"`, the finalized `evidence_status` (Decision D6), and resolved `depends_on` onto assumption creation payloads, and `derived_question_label`, `gap_type`, resolved `source_assumption_ids`, and `blocking_reason` onto work item creation payloads. It stores the validated `session_frame` on the accepted `MODEL_RESPONSE_RECORDED.payload`.
 
 Rejection examples:
 - `assumptions[0].id == "A-0001"`.
@@ -362,7 +383,7 @@ Semantic validation:
 - The accepted output records `AUDIT_RUN.payload.audit_type == "blind_spot"` (Decision D2).
 - The harness deterministically converts findings into ordinary entities and work items, reusing the existing V1 conversion flow (`src/interrogation_harness/audit.py`) extended for the V2 finding kinds.
 - Duplicate findings must not create duplicate contradictions or duplicate blocker work. Deduplication uses the existing key (refs plus description) plus finding kind.
-- High-severity converted work must block closure. Converted work sets `premise_origin = "blind_spot"` (or `"audit"`), a `gap_type` mapped from the finding kind, and `blocks_closure` per Decision D4 (high always; medium only with a `blocking_reason`).
+- High-severity converted work must block closure. Converted work sets `premise_origin = "blind_spot"` (or `"audit"`), a `gap_type` mapped from the finding kind, and `blocks_closure` / `blocking_reason` per Decision D5 (high always blocks with no reason required; medium that blocks carries a non-empty `blocking_reason`; low does not block).
 
 Rejection examples:
 - Finding references `A-9999`.
@@ -456,7 +477,7 @@ Because each is a `blocks_closure` work item, ranking selects it ahead of non-bl
 
 Normal artifact generation is blocked when any unresolved `blocks_closure` work item exists.
 
-In V2, high blast-radius work always blocks closure. Medium work blocks closure only when the harness or accepted model output gives a `blocking_reason`.
+Per Decision D5: `high` blast-radius work always blocks closure and needs no `blocking_reason`; `medium` work blocks closure only when it carries a non-empty `blocking_reason`; `low` work does not block closure.
 
 ### 6.4 May Pass Only Through Force Close
 
@@ -485,9 +506,16 @@ run-blind-spot-audit SESSION_ID
 Compatibility rules:
 
 ```text
+run-intake
+```
+- V1 session without `--upgrade-to-v2`: refuses with a clear error and appends no events (Decision D7).
+- V1 session with `--upgrade-to-v2`: runs intake and upgrades the session (the only V1-to-V2 path).
+- V2 session: runs intake (the flag is a no-op).
+
+```text
 run-initial-extraction
 ```
-- V1 session: runs `initial_extraction`.
+- V1 session: runs `initial_extraction` (remains the V1 extraction command).
 - V2 session: aliases to `run-intake`.
 
 ```text
