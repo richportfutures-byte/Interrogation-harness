@@ -58,6 +58,7 @@ This is the single authoritative statement of when `blocks_closure` is set and w
 - If `source_type == user_stated` and the excerpt verifies: final `evidence_status = verified_user_stated`.
 - If `source_type == user_stated` and the excerpt fails verification: the harness downgrades `source_type` to `model_inferred`, sets `source_excerpt_verified = false`, and sets final `evidence_status = model_inferred`.
 - If `source_type == model_inferred`: final `evidence_status = model_inferred`, unless the model explicitly marked the item `open_dependency`, `external_validation_required`, or `undecidable`, in which case that value is preserved.
+- If `source_type == external_required`: final `evidence_status = external_validation_required`.
 - Invariant: the ledger MUST NEVER contain `source_type == model_inferred` with `evidence_status == verified_user_stated`.
 
 **D7. run-intake V1 behavior (canonical).**
@@ -301,7 +302,6 @@ Rejection examples:
 | `recommended_default` | yes | string | yes | Requires basis when non-null |
 | `recommended_default_basis` | yes | string | yes | Must resolve when non-null |
 | `allowed_answers` | yes | list | no | Existing answer enum |
-| `blocking_reason` | yes | string | yes | Required when the selected item blocks closure |
 
 Semantic validation:
 - Must not create or transition anything.
@@ -309,6 +309,7 @@ Semantic validation:
 - Premise-blocker priority (Decision D4): if any unresolved premise blocker exists (an unresolved work item with `blocks_closure == true`), the selected item must itself be a premise blocker. Selecting a non-blocking item while a premise blocker is unresolved is rejected. There is no curiosity override that bypasses an unresolved premise blocker; the model may only order among blockers.
 - Active-item rule: if exactly one work item is already `active`, the ranker may select only that active item.
 - More than one active work item indicates a corrupt projection; the operation is refused (this is also an ask-next refusal, Section 6.1).
+- The selected work item's stored `blocking_reason` must satisfy Decision D5: required and non-empty for medium work that blocks closure, optional for high work that blocks closure.
 
 Rejection examples:
 - Selects `W-9999`.

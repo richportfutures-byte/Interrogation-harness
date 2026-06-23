@@ -469,6 +469,8 @@ class ModelContractValidator:
         if tested is not None and not refs.exists(tested):
             raise SemanticValidationError(f"tested entity does not exist: {tested!r}")
         _check_recommended_default(parsed, refs)
+        if refs.ledger.get("protocol_version") == "2.0.0":
+            _semantic_rank_next_v2(work_item, refs)
 
     def _prepare_interpret_events(
         self,
@@ -779,9 +781,9 @@ def _finalize_evidence_status(payload: dict[str, Any]) -> dict[str, Any]:
             payload["evidence_status"] = proposed
         else:
             payload["evidence_status"] = EvidenceStatus.MODEL_INFERRED.value
+    elif source_type == SourceType.EXTERNAL_REQUIRED.value:
+        payload["evidence_status"] = EvidenceStatus.EXTERNAL_VALIDATION_REQUIRED.value
     elif proposed == EvidenceStatus.VERIFIED_USER_STATED.value:
-        # external_required (or any non user_stated): D6 is silent on its evidence
-        # status, but a non user_stated item may never claim verified_user_stated.
         payload["evidence_status"] = EvidenceStatus.MODEL_INFERRED.value
     return payload
 
@@ -792,6 +794,8 @@ def _validate_intake_work_item(work_item: dict[str, Any]) -> None:
     blocks = bool(work_item.get("blocks_closure"))
     if blast == BlastRadius.HIGH.value and not blocks:
         raise SemanticValidationError("high blast radius work items must block closure")
+    if blast == BlastRadius.LOW.value and blocks:
+        raise SemanticValidationError("low blast radius work items must not block closure")
     if blast == BlastRadius.MEDIUM.value and blocks:
         reason = work_item.get("blocking_reason")
         if not (isinstance(reason, str) and reason.strip()):
@@ -820,13 +824,63 @@ def _resolve_creation_ref(
 
 
 def _check_recommended_default(parsed: dict[str, Any], refs: _ProjectionRefs) -> None:
-    if parsed.get("recommended_default") is None:
-        return
     basis = parsed.get("recommended_default_basis")
-    if basis is None or not refs.exists(basis):
+    if parsed.get("recommended_default") is not None and basis is None:
         raise SemanticValidationError(
             f"recommended default basis does not exist: {basis!r}"
         )
+    if basis is not None and not refs.exists(basis):
+        raise SemanticValidationError(
+            f"recommended default basis does not exist: {basis!r}"
+        )
+
+
+def _semantic_rank_next_v2(work_item: dict[str, Any], refs: _ProjectionRefs) -> None:
+    active = [
+        item
+        for item in refs.ledger.get("work_items", [])
+        if item.get("status") == "active"
+    ]
+    if len(active) > 1:
+        raise SemanticValidationError(
+            f"more than one active work item: {sorted(item['id'] for item in active)}"
+        )
+    if active and active[0].get("id") != work_item.get("id"):
+        raise SemanticValidationError(
+            f"another work item is already active: {active[0].get('id')}"
+        )
+
+    _validate_v2_selected_work_item(work_item)
+    if work_item.get("status") == "active":
+        return
+
+    blockers = [
+        item for item in refs.ledger.get("work_items", []) if _is_premise_blocker(item)
+    ]
+    if blockers and not _is_premise_blocker(work_item):
+        blocker_ids = ", ".join(sorted(item["id"] for item in blockers))
+        raise SemanticValidationError(
+            "selected non-blocking work item while unresolved premise blockers exist: "
+            f"{blocker_ids}"
+        )
+
+
+def _validate_v2_selected_work_item(work_item: dict[str, Any]) -> None:
+    if not bool(work_item.get("blocks_closure")):
+        return
+    blast = work_item.get("blast_radius")
+    if blast == BlastRadius.LOW.value:
+        raise SemanticValidationError("low blast radius work items must not block closure")
+    if blast == BlastRadius.MEDIUM.value:
+        reason = work_item.get("blocking_reason")
+        if not (isinstance(reason, str) and reason.strip()):
+            raise SemanticValidationError(
+                "medium work item that blocks closure must carry a blocking_reason"
+            )
+
+
+def _is_premise_blocker(work_item: dict[str, Any]) -> bool:
+    return work_item.get("status") != "resolved" and bool(work_item.get("blocks_closure"))
 
 
 def _entity_type_for_transition(event_type: str) -> str:
