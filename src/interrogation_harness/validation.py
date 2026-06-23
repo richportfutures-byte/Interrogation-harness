@@ -16,8 +16,18 @@ from interrogation_harness.model.jobs import CREATION_EVENT_TYPES, job_spec
 from interrogation_harness.model.schemas import SchemaError, validate_output_schema
 from interrogation_harness.projection import LedgerProjector
 from interrogation_harness.provenance import apply_assumption_provenance
-from interrogation_harness.records import BlastRadius, GapType
+from interrogation_harness.records import BlastRadius, EvidenceStatus, GapType, SourceType
 from interrogation_harness.state_machine import IllegalTransition, StateMachine
+
+# Evidence statuses a model_inferred assumption may keep (Decision D6). Anything else on
+# a model_inferred item is normalized to model_inferred.
+_PRESERVABLE_EVIDENCE = frozenset(
+    {
+        EvidenceStatus.OPEN_DEPENDENCY.value,
+        EvidenceStatus.EXTERNAL_VALIDATION_REQUIRED.value,
+        EvidenceStatus.UNDECIDABLE.value,
+    }
+)
 
 _DURABLE_REF = re.compile(r"^[ATDRCW]-\d+$")
 
@@ -311,6 +321,7 @@ class ModelContractValidator:
         for assumption in parsed["assumptions"]:
             payload = _without_keys(assumption, {"tmp_handle", "external_fact", "depends_on"})
             payload = apply_assumption_provenance(payload, source_markdown)
+            payload = _finalize_evidence_status(payload)
             payload["id"] = ref_map[assumption["tmp_handle"]]
             payload["premise_origin"] = "intake"
             payload["depends_on"] = [
@@ -745,6 +756,34 @@ def _collect_initial_temp_handles(parsed: dict[str, Any]) -> list[str]:
     for key in ("assumptions", "terms", "decisions", "risks", "contradictions", "work_items"):
         handles.extend(item["tmp_handle"] for item in parsed.get(key, []))
     return handles
+
+
+def _finalize_evidence_status(payload: dict[str, Any]) -> dict[str, Any]:
+    """Harness-finalize evidence_status after provenance, per Decision D6.
+
+    Runs on the assumption creation payload after :func:`apply_assumption_provenance`,
+    so ``source_type`` and ``source_excerpt_verified`` already reflect the verified or
+    downgraded state. The model-proposed ``evidence_status`` can never override final
+    provenance: the ledger must never carry source_type model_inferred with
+    evidence_status verified_user_stated.
+    """
+    source_type = payload.get("source_type")
+    proposed = payload.get("evidence_status")
+    if source_type == SourceType.USER_STATED.value:
+        # Reaching here means provenance verified the excerpt (failure downgrades to
+        # model_inferred). The claim is final regardless of what the model proposed.
+        payload["evidence_status"] = EvidenceStatus.VERIFIED_USER_STATED.value
+    elif source_type == SourceType.MODEL_INFERRED.value:
+        downgraded = "provenance_downgrade_reason" in payload
+        if not downgraded and proposed in _PRESERVABLE_EVIDENCE:
+            payload["evidence_status"] = proposed
+        else:
+            payload["evidence_status"] = EvidenceStatus.MODEL_INFERRED.value
+    elif proposed == EvidenceStatus.VERIFIED_USER_STATED.value:
+        # external_required (or any non user_stated): D6 is silent on its evidence
+        # status, but a non user_stated item may never claim verified_user_stated.
+        payload["evidence_status"] = EvidenceStatus.MODEL_INFERRED.value
+    return payload
 
 
 def _validate_intake_work_item(work_item: dict[str, Any]) -> None:

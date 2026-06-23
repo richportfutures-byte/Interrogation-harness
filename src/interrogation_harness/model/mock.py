@@ -374,9 +374,12 @@ def _intake_bad_session_frame() -> dict[str, Any]:
 
 
 def _intake_unverifiable_excerpt() -> dict[str, Any]:
+    # Adversarial: the model claims a verified user_stated excerpt that is not in the
+    # source. The harness must downgrade provenance and finalize evidence_status
+    # (Decision D6); this value must not survive to the ledger.
     data = _valid_intake()
     data["assumptions"][0]["source_excerpt"] = "This text does not appear in the source."
-    data["assumptions"][0]["evidence_status"] = "model_inferred"
+    data["assumptions"][0]["evidence_status"] = "verified_user_stated"
     return data
 
 
