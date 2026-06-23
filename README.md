@@ -29,7 +29,7 @@ uv pip install -e ".[dev]"
 Using the standard library tooling as a fallback:
 
 ```
-python -m venv .venv
+uv venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 ```
@@ -58,7 +58,7 @@ The default root is `sessions`, so the shorter form works in an installed or act
 environment:
 
 ```
-python -m interrogation_harness resume-session sample_session
+uv run python -m interrogation_harness resume-session sample_session
 ```
 
 ## Sample Session
