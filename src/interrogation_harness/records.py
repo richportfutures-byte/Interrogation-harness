@@ -134,6 +134,48 @@ class AnswerClass(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# V2 optional value sets (V2 Implementation Spec, Section 2.3)
+# ---------------------------------------------------------------------------
+
+
+class PremiseOrigin(str, Enum):
+    """Assumption.premise_origin (V2). How a premise entered the record."""
+
+    INTAKE = "intake"
+    ANSWER = "answer"
+    BLIND_SPOT = "blind_spot"
+    AUDIT = "audit"
+    MANUAL = "manual"
+
+
+class EvidenceStatus(str, Enum):
+    """Assumption.evidence_status (V2). The standard-of-evidence tag (protocol Section 2.4)."""
+
+    VERIFIED_USER_STATED = "verified_user_stated"
+    MODEL_INFERRED = "model_inferred"
+    UNVERIFIED_ACCEPTED = "unverified_accepted"
+    OPEN_DEPENDENCY = "open_dependency"
+    EXTERNAL_VALIDATION_REQUIRED = "external_validation_required"
+    UNDECIDABLE = "undecidable"
+
+
+class GapType(str, Enum):
+    """WorkItem.gap_type (V2). The gap taxonomy that produced a derived question."""
+
+    UNSTATED_PRECONDITION = "unstated_precondition"
+    SCOPE_BOUNDARY = "scope_boundary"
+    AUTHORITY_OWNERSHIP = "authority_ownership"
+    FAILURE_MODE = "failure_mode"
+    METRIC_DEFINITION = "metric_definition"
+    TEMPORAL_ASSUMPTION = "temporal_assumption"
+    DEPENDENCY_CHAIN = "dependency_chain"
+    INPUT_COMPLETENESS = "input_completeness"
+    CONTRADICTION = "contradiction"
+    SCOPE_CONFLICT = "scope_conflict"
+    BLIND_SPOT = "blind_spot"
+
+
+# ---------------------------------------------------------------------------
 # Shared sub-records
 # ---------------------------------------------------------------------------
 
@@ -176,6 +218,11 @@ class Assumption:
     tested_by_work_item: str | None = None
     user_answer_events: list[str] = field(default_factory=list)
     revision_history: list[RevisionEntry] = field(default_factory=list)
+    # V2 optional fields (omitted from the ledger when null/empty, Section 2.4).
+    intake_label: str | None = None
+    premise_origin: PremiseOrigin | None = None
+    evidence_status: EvidenceStatus | None = None
+    depends_on: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -255,3 +302,8 @@ class WorkItem:
     recommended_default_basis: str | None = None
     answer_options: list[AnswerClass] = field(default_factory=list)
     deferred_reason: str | None = None
+    # V2 optional fields (omitted from the ledger when null/empty, Section 2.4).
+    derived_question_label: str | None = None
+    gap_type: GapType | None = None
+    source_assumption_ids: list[str] = field(default_factory=list)
+    blocking_reason: str | None = None

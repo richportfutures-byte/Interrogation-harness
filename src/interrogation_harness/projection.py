@@ -23,6 +23,9 @@ from .records import (
     Assumption,
     Contradiction,
     Decision,
+    EvidenceStatus,
+    GapType,
+    PremiseOrigin,
     Risk,
     RevisionEntry,
     Term,
@@ -68,9 +71,46 @@ _CREATION_EVENT_TYPES = frozenset(
 )
 _SESSION_FRAME_FIELDS = ("topic", "downstream_use", "closure_standard", "input_mode")
 
+# V2 optional entity fields, omitted from the projected record when null or empty
+# (Section 2.4). Mapped per ledger array so V1 arrays are untouched.
+_ASSUMPTION_V2_FIELDS = ("intake_label", "premise_origin", "evidence_status", "depends_on")
+_WORK_ITEM_V2_FIELDS = (
+    "derived_question_label",
+    "gap_type",
+    "source_assumption_ids",
+    "blocking_reason",
+)
+_V2_FIELDS_BY_ARRAY = {
+    "assumptions": _ASSUMPTION_V2_FIELDS,
+    "work_items": _WORK_ITEM_V2_FIELDS,
+}
+
 
 class ProjectionError(Exception):
     """Raised when the event log is internally inconsistent (corrupt log)."""
+
+
+def _validate_v2_enum(value, enum_cls, field_name: str):
+    """Return value if it is a legal enum member value or None; else raise.
+
+    Simple enum support for V2 creation events. Full V2 creation validation lives in
+    the validator (a later stage); this guard keeps the projection honest.
+    """
+    if value is None:
+        return None
+    legal = {member.value for member in enum_cls}
+    if value not in legal:
+        raise ProjectionError(f"invalid {field_name}: {value!r}")
+    return value
+
+
+def _omit_empty_v2_fields(record: dict, fields: tuple[str, ...]) -> dict:
+    """Drop V2 fields from a serialized record when null or empty (Section 2.4)."""
+    for name in fields:
+        value = record.get(name)
+        if value is None or (isinstance(value, list) and not value):
+            record.pop(name, None)
+    return record
 
 
 class LedgerProjector:
@@ -157,6 +197,14 @@ class _ProjectionState:
             revision_history=[
                 RevisionEntry(**entry) for entry in p.get("revision_history", [])
             ],
+            intake_label=p.get("intake_label"),
+            premise_origin=_validate_v2_enum(
+                p.get("premise_origin"), PremiseOrigin, "premise_origin"
+            ),
+            evidence_status=_validate_v2_enum(
+                p.get("evidence_status"), EvidenceStatus, "evidence_status"
+            ),
+            depends_on=list(p.get("depends_on", [])),
         )
 
     def _on_TERM_CREATED(self, event: dict) -> None:
@@ -240,6 +288,10 @@ class _ProjectionState:
             recommended_default_basis=p.get("recommended_default_basis"),
             answer_options=list(p.get("answer_options", [])),
             deferred_reason=p.get("deferred_reason"),
+            derived_question_label=p.get("derived_question_label"),
+            gap_type=_validate_v2_enum(p.get("gap_type"), GapType, "gap_type"),
+            source_assumption_ids=list(p.get("source_assumption_ids", [])),
+            blocking_reason=p.get("blocking_reason"),
         )
         self._check_single_active()
 
@@ -374,8 +426,10 @@ class _ProjectionState:
         }
         for ledger_key, attr in _LEDGER_ARRAYS:
             collection = getattr(self, attr)
+            v2_fields = _V2_FIELDS_BY_ARRAY.get(ledger_key, ())
             ledger[ledger_key] = [
-                asdict(collection[ident]) for ident in sorted(collection)
+                _omit_empty_v2_fields(asdict(collection[ident]), v2_fields)
+                for ident in sorted(collection)
             ]
         return ledger
 
