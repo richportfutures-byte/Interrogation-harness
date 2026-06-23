@@ -50,6 +50,24 @@ _LEDGER_ARRAYS = (
     ("work_items", "_work_items"),
 )
 
+# V2 signal constants (V2 Implementation Spec, Sections 2.2 and 5). These job and
+# audit-type names are read as structured, harness-written event fields. V2 model jobs
+# and the blind-spot audit are not implemented yet (later stages), so in V1 sessions
+# these signals are simply absent and the V2 ledger fields are not emitted.
+_V2_INTAKE_JOB = "intake_unstructured_input"
+_BLIND_SPOT_AUDIT_TYPE = "blind_spot"
+_CREATION_EVENT_TYPES = frozenset(
+    {
+        "ASSUMPTION_CREATED",
+        "TERM_CREATED",
+        "DECISION_CREATED",
+        "RISK_CREATED",
+        "CONTRADICTION_CREATED",
+        "WORK_ITEM_CREATED",
+    }
+)
+_SESSION_FRAME_FIELDS = ("topic", "downstream_use", "closure_standard", "input_mode")
+
 
 class ProjectionError(Exception):
     """Raised when the event log is internally inconsistent (corrupt log)."""
@@ -59,11 +77,20 @@ class LedgerProjector:
     """Folds accepted events into a canonical-ready ledger dict."""
 
     def project(self, events: list[dict]) -> dict:
-        """Return the ledger projection for the given ordered events."""
+        """Return the ledger projection for the given ordered events.
+
+        The V1 entity fold is unchanged. V2 ledger fields are derived in a separate
+        pure pass and attached only when the session is V2 (Decision D3, Section 2.5),
+        so a V1 session serializes byte-for-byte as before.
+        """
         state = _ProjectionState()
         for event in events:
             state.apply(event)
-        return state.to_ledger()
+        ledger = state.to_ledger()
+        v2_fields = _project_v2_fields(events)
+        if v2_fields is not None:
+            ledger.update(v2_fields)
+        return ledger
 
 
 class _ProjectionState:
@@ -351,3 +378,103 @@ class _ProjectionState:
                 asdict(collection[ident]) for ident in sorted(collection)
             ]
         return ledger
+
+
+# ---------------------------------------------------------------------------
+# V2 ledger field projection (V2 Implementation Spec, Section 2.2)
+#
+# These functions are a pure second pass over the same events. They never call the
+# model, read a clock, mint identity, or parse raw_output. They read only structured,
+# harness-written payload fields.
+# ---------------------------------------------------------------------------
+
+
+def _is_accepted_intake_response(event: dict) -> bool:
+    if event.get("event_type") != "MODEL_RESPONSE_RECORDED":
+        return False
+    payload = event.get("payload", {})
+    return payload.get("job") == _V2_INTAKE_JOB and payload.get("accepted") is True
+
+
+def _is_blind_spot_audit(event: dict) -> bool:
+    return (
+        event.get("event_type") == "AUDIT_RUN"
+        and event.get("payload", {}).get("audit_type") == _BLIND_SPOT_AUDIT_TYPE
+    )
+
+
+def _project_protocol_version(events: list[dict]) -> str:
+    version = "1.0.0"
+    for event in events:
+        if event.get("event_type") == "SESSION_CREATED":
+            declared = event.get("payload", {}).get("protocol_version")
+            if declared is not None:
+                version = declared
+    # Inference only ever upgrades to 2.0.0; it never downgrades an explicit 2.0.0.
+    for event in events:
+        if _is_accepted_intake_response(event) or _is_blind_spot_audit(event):
+            return "2.0.0"
+    return version
+
+
+def _project_session_frame(events: list[dict]) -> dict:
+    frame = {field: None for field in _SESSION_FRAME_FIELDS}
+    session_created_frame: dict | None = None
+    intake_frame: dict | None = None
+    for event in events:
+        if event.get("event_type") == "SESSION_CREATED":
+            candidate = event.get("payload", {}).get("session_frame")
+            if isinstance(candidate, dict) and session_created_frame is None:
+                session_created_frame = candidate
+        elif _is_accepted_intake_response(event):
+            candidate = event.get("payload", {}).get("session_frame")
+            if isinstance(candidate, dict) and intake_frame is None:
+                intake_frame = candidate
+    chosen = session_created_frame if session_created_frame is not None else intake_frame
+    if chosen is not None:
+        for field in _SESSION_FRAME_FIELDS:
+            frame[field] = chosen.get(field)
+    return frame
+
+
+def _project_intake_status(events: list[dict], protocol_version: str) -> str:
+    if protocol_version != "2.0.0":
+        return "not_required"
+    has_source = any(event.get("event_type") == "SOURCE_ADDED" for event in events)
+    if not has_source:
+        return "not_required"
+    accepted_intake_correlations = {
+        event.get("correlation_id")
+        for event in events
+        if _is_accepted_intake_response(event)
+    }
+    if not accepted_intake_correlations:
+        return "required"
+    creation_correlations = {
+        event.get("correlation_id")
+        for event in events
+        if event.get("event_type") in _CREATION_EVENT_TYPES
+    }
+    if accepted_intake_correlations & creation_correlations:
+        return "complete"
+    return "required"
+
+
+def _project_blind_spot_status(events: list[dict]) -> str:
+    for event in events:
+        if _is_blind_spot_audit(event):
+            return "complete"
+    return "not_run"
+
+
+def _project_v2_fields(events: list[dict]) -> dict | None:
+    """Return the four V2 ledger fields, or None when the session is V1."""
+    protocol_version = _project_protocol_version(events)
+    if protocol_version != "2.0.0":
+        return None
+    return {
+        "protocol_version": protocol_version,
+        "session_frame": _project_session_frame(events),
+        "intake_status": _project_intake_status(events, protocol_version),
+        "blind_spot_audit_status": _project_blind_spot_status(events),
+    }

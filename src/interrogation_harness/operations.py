@@ -83,9 +83,29 @@ class HarnessOperations:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def create_session(self) -> dict[str, Any]:
+    def create_session(
+        self,
+        *,
+        protocol_version: str | None = None,
+        session_frame: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a session.
+
+        Default (V1) behavior is unchanged: the SESSION_CREATED payload is exactly
+        {"session_id": ...} and the idempotency input is empty, so V1 bytes are
+        preserved. protocol_version and session_frame are written only when supplied
+        (V2 activation, V2 Implementation Spec Section 1 and Decision D1).
+        """
         self.store.create()
-        ids = self.op_ids("create-session", {})
+        op_input: dict[str, Any] = {}
+        payload: dict[str, Any] = {"session_id": self.session_id}
+        if protocol_version is not None:
+            op_input["protocol_version"] = protocol_version
+            payload["protocol_version"] = protocol_version
+        if session_frame is not None:
+            op_input["session_frame"] = session_frame
+            payload["session_frame"] = session_frame
+        ids = self.op_ids("create-session", op_input)
         if self.event_log.accepted_correlation(ids.idempotency_key) is None:
             self.event_log.append(
                 event_type=EventType.SESSION_CREATED,
@@ -94,7 +114,7 @@ class HarnessOperations:
                 correlation_id=ids.correlation_id,
                 idempotency_key=ids.idempotency_key,
                 timestamp=ids.timestamp,
-                payload={"session_id": self.session_id},
+                payload=payload,
             )
         return self.rebuild_ledger()
 

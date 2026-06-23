@@ -17,7 +17,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", default="sessions")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    _session(sub, "create-session")
+    create = _session(sub, "create-session")
+    create.add_argument(
+        "--protocol-version",
+        dest="protocol_version",
+        choices=["1.0.0", "2.0.0"],
+        default=None,
+    )
+    create.add_argument("--topic", default=None)
+    create.add_argument("--downstream-use", dest="downstream_use", default=None)
+    create.add_argument("--closure-standard", dest="closure_standard", default=None)
+    create.add_argument(
+        "--input-mode",
+        dest="input_mode",
+        choices=["structured", "unstructured", "mixed"],
+        default=None,
+    )
     add_source = _session(sub, "add-source")
     add_source.add_argument("content", nargs="?")
     add_source.add_argument("--file")
@@ -63,7 +78,10 @@ def _session(sub, name: str):
 def _dispatch(args, ops: HarnessOperations):
     command = args.command
     if command == "create-session":
-        return ops.create_session()
+        return ops.create_session(
+            protocol_version=args.protocol_version,
+            session_frame=_session_frame_from_args(args),
+        )
     if command == "add-source":
         content = _source_content(args)
         return ops.add_source(content)
@@ -94,6 +112,19 @@ def _dispatch(args, ops: HarnessOperations):
     if command == "resume-session":
         return {"byte_identical": ops.resume_session()}
     raise ValueError(f"unknown command: {command}")
+
+
+def _session_frame_from_args(args) -> dict | None:
+    """Build a session_frame from optional create-session flags, or None if absent."""
+    fields = {
+        "topic": args.topic,
+        "downstream_use": args.downstream_use,
+        "closure_standard": args.closure_standard,
+        "input_mode": args.input_mode,
+    }
+    if all(value is None for value in fields.values()):
+        return None
+    return fields
 
 
 def _source_content(args) -> str:
