@@ -70,6 +70,20 @@ JOB_SPECS: dict[ModelJob, ModelJobSpec] = {
         allowed_event_types=frozenset(),
         records_event_type=EventType.ARTIFACT_GENERATED,
     ),
+    # V2 jobs (V2 spec Sections 3 and 4). intake creates entities by temp handle, like
+    # initial_extraction. blind_spot_audit reports findings only and is registered here;
+    # its runtime conversion is not implemented in this pass.
+    ModelJob.INTAKE_UNSTRUCTURED_INPUT: ModelJobSpec(
+        job=ModelJob.INTAKE_UNSTRUCTURED_INPUT,
+        may_create=True,
+        allowed_event_types=CREATION_EVENT_TYPES,
+    ),
+    ModelJob.BLIND_SPOT_AUDIT: ModelJobSpec(
+        job=ModelJob.BLIND_SPOT_AUDIT,
+        may_create=False,
+        allowed_event_types=frozenset(),
+        records_event_type=EventType.AUDIT_RUN,
+    ),
 }
 
 
@@ -78,10 +92,24 @@ def job_spec(job: ModelJob | str) -> ModelJobSpec:
     return JOB_SPECS[ModelJob(job)]
 
 
+def extraction_job(protocol_version: str) -> ModelJob:
+    """The extraction job for a protocol: V1 initial_extraction or V2 intake."""
+    if protocol_version == "2.0.0":
+        return ModelJob.INTAKE_UNSTRUCTURED_INPUT
+    return ModelJob.INITIAL_EXTRACTION
+
+
+def audit_job(protocol_version: str) -> ModelJob:
+    """The audit job for a protocol: V1 contradiction_audit or V2 blind_spot_audit."""
+    if protocol_version == "2.0.0":
+        return ModelJob.BLIND_SPOT_AUDIT
+    return ModelJob.CONTRADICTION_AUDIT
+
+
 def build_model_request(job: ModelJob | str, **payload: object) -> ModelRequest:
     """Build a request payload for one of the five Section 12 jobs."""
     resolved = ModelJob(job)
-    if resolved == ModelJob.INITIAL_EXTRACTION:
+    if resolved in (ModelJob.INITIAL_EXTRACTION, ModelJob.INTAKE_UNSTRUCTURED_INPUT):
         payload.setdefault("do_not_mint_durable_ids", True)
         payload.setdefault("mark_model_inferences", True)
         payload.setdefault("cite_source_excerpts", True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Any, Iterable
 
@@ -15,12 +16,19 @@ from interrogation_harness.records import (
     BlastRadius,
     ContradictionStatus,
     DecisionStatus,
+    EvidenceStatus,
+    GapType,
     RiskStatus,
     Severity,
     SourceType,
     TermStatus,
     WorkItemKind,
 )
+
+_CA_LABEL = re.compile(r"^CA-\d{2,}$")
+_DQ_LABEL = re.compile(r"^DQ-\d{2,}$")
+_INPUT_MODES = {"structured", "unstructured", "mixed"}
+_SESSION_FRAME_FIELDS = {"topic", "downstream_use", "closure_standard", "input_mode"}
 
 
 class SchemaError(Exception):
@@ -74,6 +82,48 @@ _CONTRADICTION_FIELDS = {
     "status",
 }
 
+# V2 intake field sets (V2 spec Section 4.1).
+_INTAKE_TOP = {
+    "session_frame",
+    "assumptions",
+    "work_items",
+    "risks",
+    "terms",
+    "decisions",
+    "contradictions",
+}
+_INTAKE_ASSUMPTION_FIELDS = {
+    "tmp_handle",
+    "intake_label",
+    "statement",
+    "status",
+    "source_type",
+    "source_excerpt",
+    "blast_radius",
+    "downstream_impact",
+    "risk_if_wrong",
+    "evidence_status",
+    "depends_on",
+    "external_fact",
+}
+_INTAKE_WORK_ITEM_FIELDS = {
+    "tmp_handle",
+    "derived_question_label",
+    "kind",
+    "question",
+    "why_it_matters",
+    "what_breaks_if_wrong",
+    "blast_radius",
+    "blocks_closure",
+    "gap_type",
+    "related_temp_refs",
+    "source_assumption_refs",
+    "answer_options",
+    "recommended_default",
+    "recommended_default_basis",
+    "blocking_reason",
+}
+
 
 def validate_output_schema(job: ModelJob | str, data: Any) -> dict[str, Any]:
     """Validate and return a defensive copy of a model output object."""
@@ -84,6 +134,8 @@ def validate_output_schema(job: ModelJob | str, data: Any) -> dict[str, Any]:
     errors: list[str] = []
     if resolved == ModelJob.INITIAL_EXTRACTION:
         _validate_initial_extraction(copied, errors)
+    elif resolved == ModelJob.INTAKE_UNSTRUCTURED_INPUT:
+        _validate_intake_unstructured_input(copied, errors)
     elif resolved == ModelJob.RANK_NEXT_WORK_ITEM:
         _validate_rank_next_work_item(copied, errors)
     elif resolved == ModelJob.INTERPRET_USER_ANSWER:
@@ -182,6 +234,142 @@ def _validate_initial_extraction(data: dict[str, Any], errors: list[str]) -> Non
         _require_list(item, "refs", path, errors)
         _enum(item, "severity", Severity, path, errors)
         _enum(item, "status", ContradictionStatus, path, errors)
+
+
+def _validate_intake_unstructured_input(data: dict[str, Any], errors: list[str]) -> None:
+    _exact_keys(data, _INTAKE_TOP, "intake", errors)
+    _validate_session_frame(data, errors)
+    for key in ("assumptions", "work_items", "risks", "terms", "decisions", "contradictions"):
+        _require_list(data, key, f"intake.{key}", errors)
+
+    for index, item in enumerate(data.get("assumptions", [])):
+        path = f"assumptions[{index}]"
+        _creation_object(item, _INTAKE_ASSUMPTION_FIELDS, path, errors)
+        _require_fields(
+            item,
+            {
+                "tmp_handle",
+                "intake_label",
+                "statement",
+                "status",
+                "source_type",
+                "source_excerpt",
+                "blast_radius",
+                "downstream_impact",
+                "risk_if_wrong",
+                "evidence_status",
+            },
+            path,
+            errors,
+        )
+        if isinstance(item, dict):
+            if item.get("status") != AssumptionStatus.CANDIDATE.value:
+                errors.append(f"{path}.status must be candidate")
+            _label(item.get("intake_label"), _CA_LABEL, f"{path}.intake_label", "CA-NN", errors)
+            for field_name in ("statement", "downstream_impact", "risk_if_wrong"):
+                if not _nonempty_string(item.get(field_name)):
+                    errors.append(f"{path}.{field_name} must be a non-empty string")
+            if "depends_on" in item:
+                _require_list(item, "depends_on", path, errors)
+        _enum(item, "source_type", SourceType, path, errors)
+        _enum(item, "blast_radius", BlastRadius, path, errors)
+        _enum(item, "evidence_status", EvidenceStatus, path, errors)
+        if isinstance(item, dict) and item.get("source_type") == SourceType.EXTERNAL_REQUIRED.value:
+            if not _nonempty_string(item.get("external_fact")):
+                errors.append(f"{path}.external_fact is required for external_required")
+
+    for index, item in enumerate(data.get("work_items", [])):
+        path = f"work_items[{index}]"
+        _creation_object(item, _INTAKE_WORK_ITEM_FIELDS, path, errors)
+        _require_fields(
+            item,
+            {
+                "tmp_handle",
+                "kind",
+                "question",
+                "why_it_matters",
+                "what_breaks_if_wrong",
+                "blast_radius",
+                "blocks_closure",
+            },
+            path,
+            errors,
+        )
+        _enum(item, "kind", WorkItemKind, path, errors)
+        _enum(item, "blast_radius", BlastRadius, path, errors)
+        _require_bool(item, "blocks_closure", path, errors)
+        if isinstance(item, dict):
+            for field_name in ("question", "why_it_matters", "what_breaks_if_wrong"):
+                if not _nonempty_string(item.get(field_name)):
+                    errors.append(f"{path}.{field_name} must be a non-empty string")
+            if item.get("derived_question_label") is not None:
+                _label(
+                    item.get("derived_question_label"),
+                    _DQ_LABEL,
+                    f"{path}.derived_question_label",
+                    "DQ-NN",
+                    errors,
+                )
+            if item.get("gap_type") is not None:
+                _enum_value(item.get("gap_type"), GapType, f"{path}.gap_type", errors)
+            for ref_field in ("related_temp_refs", "source_assumption_refs"):
+                if ref_field in item:
+                    _require_list(item, ref_field, path, errors)
+            if "answer_options" in item:
+                _require_list(item, "answer_options", path, errors)
+                for option in item.get("answer_options", []):
+                    _enum_value(option, AnswerClass, f"{path}.answer_options", errors)
+
+    _validate_v1_style_creations(data, errors)
+
+
+def _validate_session_frame(data: dict[str, Any], errors: list[str]) -> None:
+    frame = data.get("session_frame")
+    if not isinstance(frame, dict):
+        errors.append("intake.session_frame must be an object")
+        return
+    _exact_keys(frame, _SESSION_FRAME_FIELDS, "session_frame", errors)
+    for field_name in ("topic", "downstream_use", "closure_standard"):
+        value = frame.get(field_name)
+        if value is not None and not isinstance(value, str):
+            errors.append(f"session_frame.{field_name} must be a string or null")
+    input_mode = frame.get("input_mode")
+    if input_mode not in _INPUT_MODES:
+        errors.append(f"session_frame.input_mode has illegal value: {input_mode!r}")
+
+
+def _validate_v1_style_creations(data: dict[str, Any], errors: list[str]) -> None:
+    """Validate the risk/term/decision/contradiction creation lists (V1 shape)."""
+    for index, item in enumerate(data.get("risks", [])):
+        path = f"risks[{index}]"
+        _creation_object(item, _RISK_FIELDS, path, errors)
+        _require_fields(item, {"tmp_handle", "statement", "severity", "status"}, path, errors)
+        _enum(item, "severity", Severity, path, errors)
+        _enum(item, "status", RiskStatus, path, errors)
+        if "source_refs" in item:
+            _require_list(item, "source_refs", path, errors)
+    for index, item in enumerate(data.get("terms", [])):
+        path = f"terms[{index}]"
+        _creation_object(item, _TERM_FIELDS, path, errors)
+        _require_fields(item, {"tmp_handle", "term", "status"}, path, errors)
+        _enum(item, "status", TermStatus, path, errors)
+    for index, item in enumerate(data.get("decisions", [])):
+        path = f"decisions[{index}]"
+        _creation_object(item, _DECISION_FIELDS, path, errors)
+        _require_fields(item, {"tmp_handle", "decision", "status"}, path, errors)
+        _enum(item, "status", DecisionStatus, path, errors)
+    for index, item in enumerate(data.get("contradictions", [])):
+        path = f"contradictions[{index}]"
+        _creation_object(item, _CONTRADICTION_FIELDS, path, errors)
+        _require_fields(item, {"tmp_handle", "refs", "severity", "description", "status"}, path, errors)
+        _require_list(item, "refs", path, errors)
+        _enum(item, "severity", Severity, path, errors)
+        _enum(item, "status", ContradictionStatus, path, errors)
+
+
+def _label(value: Any, pattern, path: str, form: str, errors: list[str]) -> None:
+    if not isinstance(value, str) or not pattern.match(value):
+        errors.append(f"{path} must match {form}")
 
 
 def _validate_rank_next_work_item(data: dict[str, Any], errors: list[str]) -> None:

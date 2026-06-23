@@ -24,6 +24,14 @@ class MockScenario(str, Enum):
     MALFORMED_JSON = "malformed_json"
     ILLEGAL_TRANSITION = "illegal_transition"
     CREATION_WITH_DURABLE_ID = "creation_with_durable_id"
+    # V2 intake scenarios (V2 spec Section 8).
+    INTAKE_VALID = "intake_unstructured_input"
+    INTAKE_DURABLE_ID = "intake_durable_id_in_creation"
+    INTAKE_HIGH_NOT_BLOCKING = "intake_high_blast_not_blocking"
+    INTAKE_DQ_WITHOUT_SOURCE = "intake_dq_without_source"
+    INTAKE_INVALID_ENUM = "intake_invalid_enum"
+    INTAKE_BAD_SESSION_FRAME = "intake_missing_session_frame"
+    INTAKE_UNVERIFIABLE_EXCERPT = "intake_unverifiable_excerpt"
 
 
 def _raw_json(obj: dict[str, Any]) -> str:
@@ -275,8 +283,119 @@ RESPONSES: dict[MockScenario, str] = {
 }
 
 
+def _valid_intake() -> dict[str, Any]:
+    """A fully valid V2 intake response (CA-01 user_stated, CA-02 model_inferred, one DQ)."""
+    return {
+        "session_frame": {
+            "topic": "payment retries",
+            "downstream_use": "implementation",
+            "closure_standard": "all high blast radius assumptions locked",
+            "input_mode": "unstructured",
+        },
+        "assumptions": [
+            {
+                "tmp_handle": "tmp_assumption_1",
+                "intake_label": "CA-01",
+                "statement": "Payments require idempotency keys.",
+                "status": "candidate",
+                "source_type": "user_stated",
+                "source_excerpt": "Payments require idempotency keys.",
+                "blast_radius": "high",
+                "downstream_impact": "Payment retries and duplicate prevention",
+                "risk_if_wrong": "Duplicate charges or corrupted payment state",
+                "evidence_status": "verified_user_stated",
+            },
+            {
+                "tmp_handle": "tmp_assumption_2",
+                "intake_label": "CA-02",
+                "statement": "Operators tolerate manual force close.",
+                "status": "candidate",
+                "source_type": "model_inferred",
+                "source_excerpt": None,
+                "blast_radius": "medium",
+                "downstream_impact": "Closure workflow",
+                "risk_if_wrong": "Incomplete handoff expectations",
+                "evidence_status": "model_inferred",
+            },
+        ],
+        "work_items": [
+            {
+                "tmp_handle": "tmp_work_1",
+                "derived_question_label": "DQ-01",
+                "kind": "resolve_assumption",
+                "question": "If a payment retry fires, what guarantees idempotency?",
+                "why_it_matters": "It controls duplicate side effects.",
+                "what_breaks_if_wrong": "A retry can create two payments.",
+                "blast_radius": "high",
+                "blocks_closure": True,
+                "gap_type": "failure_mode",
+                "source_assumption_refs": ["tmp_assumption_1"],
+                "answer_options": ["confirm", "reject", "revise", "defer", "unknown"],
+            }
+        ],
+        "risks": [],
+        "terms": [],
+        "decisions": [],
+        "contradictions": [],
+    }
+
+
+def _intake_durable_id() -> dict[str, Any]:
+    data = _valid_intake()
+    data["assumptions"][0]["id"] = "A-0001"
+    return data
+
+
+def _intake_high_not_blocking() -> dict[str, Any]:
+    data = _valid_intake()
+    data["work_items"][0]["blocks_closure"] = False
+    return data
+
+
+def _intake_dq_without_source() -> dict[str, Any]:
+    data = _valid_intake()
+    work_item = data["work_items"][0]
+    work_item["blast_radius"] = "medium"
+    work_item["blocks_closure"] = False
+    work_item.pop("source_assumption_refs", None)
+    return data
+
+
+def _intake_invalid_enum() -> dict[str, Any]:
+    data = _valid_intake()
+    data["assumptions"][0]["evidence_status"] = "totally_invalid"
+    return data
+
+
+def _intake_bad_session_frame() -> dict[str, Any]:
+    data = _valid_intake()
+    data["session_frame"] = {"topic": "x", "downstream_use": "y", "input_mode": "bogus"}
+    return data
+
+
+def _intake_unverifiable_excerpt() -> dict[str, Any]:
+    data = _valid_intake()
+    data["assumptions"][0]["source_excerpt"] = "This text does not appear in the source."
+    data["assumptions"][0]["evidence_status"] = "model_inferred"
+    return data
+
+
+RESPONSES.update(
+    {
+        MockScenario.INTAKE_VALID: _raw_json(_valid_intake()),
+        MockScenario.INTAKE_DURABLE_ID: _raw_json(_intake_durable_id()),
+        MockScenario.INTAKE_HIGH_NOT_BLOCKING: _raw_json(_intake_high_not_blocking()),
+        MockScenario.INTAKE_DQ_WITHOUT_SOURCE: _raw_json(_intake_dq_without_source()),
+        MockScenario.INTAKE_INVALID_ENUM: _raw_json(_intake_invalid_enum()),
+        MockScenario.INTAKE_BAD_SESSION_FRAME: _raw_json(_intake_bad_session_frame()),
+        MockScenario.INTAKE_UNVERIFIABLE_EXCERPT: _raw_json(_intake_unverifiable_excerpt()),
+    }
+)
+
+
 DEFAULT_SCENARIO_BY_JOB: dict[ModelJob, MockScenario] = {
     ModelJob.INITIAL_EXTRACTION: MockScenario.INITIAL_EXTRACTION,
+    ModelJob.INTAKE_UNSTRUCTURED_INPUT: MockScenario.INTAKE_VALID,
     ModelJob.RANK_NEXT_WORK_ITEM: MockScenario.RANK_NEXT_WORK_ITEM,
     ModelJob.INTERPRET_USER_ANSWER: MockScenario.INTERPRET_CONFIRM,
     ModelJob.CONTRADICTION_AUDIT: MockScenario.CONTRADICTION_AUDIT,

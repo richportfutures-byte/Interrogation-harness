@@ -22,6 +22,14 @@ class InterrogationEngine:
 
     def ask_next(self) -> dict[str, Any]:
         ledger = self.ops.ledger()
+        # V2 only: refuse to ask while intake is still required (V2 spec Section 6.1).
+        if (
+            ledger.get("protocol_version") == "2.0.0"
+            and ledger.get("intake_status") == "required"
+        ):
+            raise OperationError(
+                "intake required for this V2 session: run `run-intake` before ask-next"
+            )
         payload = {
             "session_id": self.ops.session_id,
             "projection": ledger,

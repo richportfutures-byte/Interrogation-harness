@@ -16,7 +16,7 @@ from interrogation_harness.model.jobs import CREATION_EVENT_TYPES, job_spec
 from interrogation_harness.model.schemas import SchemaError, validate_output_schema
 from interrogation_harness.projection import LedgerProjector
 from interrogation_harness.provenance import apply_assumption_provenance
-from interrogation_harness.records import BlastRadius
+from interrogation_harness.records import BlastRadius, GapType
 from interrogation_harness.state_machine import IllegalTransition, StateMachine
 
 _DURABLE_REF = re.compile(r"^[ATDRCW]-\d+$")
@@ -175,7 +175,7 @@ class ModelContractValidator:
         assert last_parsed is not None
 
         try:
-            mutation_events = self._prepare_accepted_events(
+            mutation_events, response_extra = self._prepare_accepted_events(
                 resolved_job,
                 last_parsed,
                 source_markdown=source_markdown,
@@ -228,6 +228,7 @@ class ModelContractValidator:
                 last_raw,
                 accepted=True,
                 validation_errors=[],
+                extra=response_extra,
             )
         )
         for prepared in mutation_events:
@@ -260,25 +261,32 @@ class ModelContractValidator:
         parsed: dict[str, Any],
         *,
         source_markdown: str,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Return (mutation events, extra payload merged into MODEL_RESPONSE_RECORDED)."""
         spec = job_spec(job)
         ledger = self.projector.project(self.event_log.read_events())
         refs = _ProjectionRefs(ledger)
         if job == ModelJob.INITIAL_EXTRACTION:
-            return self._prepare_initial_extraction(parsed, refs, source_markdown)
+            return self._prepare_initial_extraction(parsed, refs, source_markdown), {}
+        if job == ModelJob.INTAKE_UNSTRUCTURED_INPUT:
+            return self._prepare_intake_events(parsed, refs, source_markdown)
         if job == ModelJob.RANK_NEXT_WORK_ITEM:
             self._semantic_rank_next(parsed, refs)
-            return []
+            return [], {}
         if job == ModelJob.INTERPRET_USER_ANSWER:
-            return self._prepare_interpret_events(parsed, refs, source_markdown)
+            return self._prepare_interpret_events(parsed, refs, source_markdown), {}
         if job == ModelJob.CONTRADICTION_AUDIT:
             self._semantic_audit(parsed, refs)
+            # V1 audits keep their original payload shape (no audit_type), so existing
+            # V1 sessions stay byte-identical. Absent audit_type projects as a V1
+            # contradiction audit (Decision D2). V2 blind-spot audits (a later pass)
+            # set audit_type explicitly.
             return [
                 {
                     "event_type": spec.records_event_type,
                     "payload": {"findings_summary": parsed},
                 }
-            ]
+            ], {}
         if job == ModelJob.ARTIFACT_GENERATION:
             self._semantic_artifact(parsed, refs)
             return [
@@ -286,8 +294,97 @@ class ModelContractValidator:
                     "event_type": spec.records_event_type,
                     "payload": parsed,
                 }
-            ]
+            ], {}
         raise SemanticValidationError(f"unsupported job: {job.value}")
+
+    def _prepare_intake_events(
+        self,
+        parsed: dict[str, Any],
+        refs: "_ProjectionRefs",
+        source_markdown: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        temp_handles = _collect_initial_temp_handles(parsed)
+        ref_map = IdAllocator.from_ledger(refs.ledger).allocate(temp_handles)
+        temp_refs = set(ref_map)
+        events: list[dict[str, Any]] = []
+
+        for assumption in parsed["assumptions"]:
+            payload = _without_keys(assumption, {"tmp_handle", "external_fact", "depends_on"})
+            payload = apply_assumption_provenance(payload, source_markdown)
+            payload["id"] = ref_map[assumption["tmp_handle"]]
+            payload["premise_origin"] = "intake"
+            payload["depends_on"] = [
+                _resolve_creation_ref(value, refs, ref_map, temp_refs)
+                for value in assumption.get("depends_on", [])
+            ]
+            events.append(
+                _prepared(EventType.ASSUMPTION_CREATED, payload, assumption["tmp_handle"], ref_map)
+            )
+
+        for term in parsed["terms"]:
+            payload = _without_keys(term, {"tmp_handle"})
+            payload["id"] = ref_map[term["tmp_handle"]]
+            events.append(_prepared(EventType.TERM_CREATED, payload, term["tmp_handle"], ref_map))
+
+        for decision in parsed["decisions"]:
+            payload = _without_keys(decision, {"tmp_handle"})
+            payload["id"] = ref_map[decision["tmp_handle"]]
+            events.append(_prepared(EventType.DECISION_CREATED, payload, decision["tmp_handle"], ref_map))
+
+        for risk in parsed["risks"]:
+            payload = _without_keys(risk, {"tmp_handle"})
+            payload["id"] = ref_map[risk["tmp_handle"]]
+            payload["source_refs"] = [
+                _resolve_creation_ref(value, refs, ref_map, temp_refs)
+                for value in risk.get("source_refs", [])
+            ]
+            events.append(_prepared(EventType.RISK_CREATED, payload, risk["tmp_handle"], ref_map))
+
+        for contradiction in parsed["contradictions"]:
+            payload = _without_keys(contradiction, {"tmp_handle"})
+            payload["id"] = ref_map[contradiction["tmp_handle"]]
+            payload["refs"] = [
+                _resolve_creation_ref(value, refs, ref_map, temp_refs)
+                for value in contradiction.get("refs", [])
+            ]
+            events.append(
+                _prepared(EventType.CONTRADICTION_CREATED, payload, contradiction["tmp_handle"], ref_map)
+            )
+
+        for work_item in parsed["work_items"]:
+            _validate_intake_work_item(work_item)
+            related = work_item.get("related_temp_refs", [])
+            target_entity = (
+                _resolve_creation_ref(related[0], refs, ref_map, temp_refs) if related else None
+            )
+            source_ids = [
+                _resolve_creation_ref(value, refs, ref_map, temp_refs)
+                for value in work_item.get("source_assumption_refs", [])
+            ]
+            payload = _without_keys(
+                work_item, {"tmp_handle", "related_temp_refs", "source_assumption_refs"}
+            )
+            payload["id"] = ref_map[work_item["tmp_handle"]]
+            payload["target_entity"] = target_entity
+            payload["source_assumption_ids"] = source_ids
+            basis = payload.get("recommended_default_basis")
+            if payload.get("recommended_default") is not None:
+                if basis is None:
+                    raise SemanticValidationError(
+                        "recommended_default requires recommended_default_basis"
+                    )
+                payload["recommended_default_basis"] = _resolve_creation_ref(
+                    basis, refs, ref_map, temp_refs
+                )
+            elif basis is not None:
+                payload["recommended_default_basis"] = _resolve_creation_ref(
+                    basis, refs, ref_map, temp_refs
+                )
+            events.append(
+                _prepared(EventType.WORK_ITEM_CREATED, payload, work_item["tmp_handle"], ref_map)
+            )
+
+        return events, {"session_frame": parsed["session_frame"]}
 
     def _prepare_initial_extraction(
         self,
@@ -543,7 +640,16 @@ class ModelContractValidator:
         *,
         accepted: bool,
         validation_errors: list[str],
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "job": job.value,
+            "raw_output": raw_output,
+            "accepted": accepted,
+            "validation_errors": validation_errors,
+        }
+        if extra:
+            payload.update(extra)
         return self.event_log.append(
             event_type=EventType.MODEL_RESPONSE_RECORDED,
             actor=Actor.MODEL,
@@ -551,12 +657,7 @@ class ModelContractValidator:
             correlation_id=correlation_id,
             idempotency_key=idempotency_key,
             timestamp=timestamp,
-            payload={
-                "job": job.value,
-                "raw_output": raw_output,
-                "accepted": accepted,
-                "validation_errors": validation_errors,
-            },
+            payload=payload,
         )
 
     def _repair_request(
@@ -644,6 +745,26 @@ def _collect_initial_temp_handles(parsed: dict[str, Any]) -> list[str]:
     for key in ("assumptions", "terms", "decisions", "risks", "contradictions", "work_items"):
         handles.extend(item["tmp_handle"] for item in parsed.get(key, []))
     return handles
+
+
+def _validate_intake_work_item(work_item: dict[str, Any]) -> None:
+    """Semantic cross-field rules for one intake work item (V2 spec Section 4.1)."""
+    blast = work_item.get("blast_radius")
+    blocks = bool(work_item.get("blocks_closure"))
+    if blast == BlastRadius.HIGH.value and not blocks:
+        raise SemanticValidationError("high blast radius work items must block closure")
+    if blast == BlastRadius.MEDIUM.value and blocks:
+        reason = work_item.get("blocking_reason")
+        if not (isinstance(reason, str) and reason.strip()):
+            raise SemanticValidationError(
+                "medium work item that blocks closure must carry a blocking_reason"
+            )
+    derived_label = work_item.get("derived_question_label")
+    if derived_label is not None and work_item.get("gap_type") != GapType.BLIND_SPOT.value:
+        if not work_item.get("source_assumption_refs"):
+            raise SemanticValidationError(
+                "derived question must reference at least one source assumption"
+            )
 
 
 def _resolve_creation_ref(

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from interrogation_harness import canonical
+from interrogation_harness.interrogation import OperationError
 from interrogation_harness.operations import HarnessOperations
 
 
@@ -37,6 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_source.add_argument("content", nargs="?")
     add_source.add_argument("--file")
     _session(sub, "run-initial-extraction")
+    run_intake = _session(sub, "run-intake")
+    run_intake.add_argument(
+        "--upgrade-to-v2", dest="upgrade_to_v2", action="store_true"
+    )
     _session(sub, "show-ledger")
     _session(sub, "show-open-work")
     _session(sub, "ask-next")
@@ -64,7 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     ops = HarnessOperations(args.root, args.session_id)
-    result = _dispatch(args, ops)
+    try:
+        result = _dispatch(args, ops)
+    except OperationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     _print_result(result)
     return 0
 
@@ -87,6 +96,8 @@ def _dispatch(args, ops: HarnessOperations):
         return ops.add_source(content)
     if command == "run-initial-extraction":
         return ops.run_initial_extraction()
+    if command == "run-intake":
+        return ops.run_intake(upgrade_to_v2=args.upgrade_to_v2)
     if command == "show-ledger":
         return ops.show_ledger()
     if command == "show-open-work":

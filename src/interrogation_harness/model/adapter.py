@@ -14,13 +14,39 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 
 class ModelJob(str, Enum):
-    """Closed model job set, Section 12."""
+    """Closed model job set: V1 jobs (Section 12) plus V2 jobs (V2 spec Section 3)."""
 
     INITIAL_EXTRACTION = "initial_extraction"
     RANK_NEXT_WORK_ITEM = "rank_next_work_item"
     INTERPRET_USER_ANSWER = "interpret_user_answer"
     CONTRADICTION_AUDIT = "contradiction_audit"
     ARTIFACT_GENERATION = "artifact_generation"
+    # V2 jobs. blind_spot_audit is registered here but its runtime behavior is not
+    # implemented in this pass.
+    INTAKE_UNSTRUCTURED_INPUT = "intake_unstructured_input"
+    BLIND_SPOT_AUDIT = "blind_spot_audit"
+
+
+# V1 and V2 job groupings, used by protocol-aware routing helpers (V2 spec Section 3).
+V1_JOBS = frozenset(
+    {
+        ModelJob.INITIAL_EXTRACTION,
+        ModelJob.CONTRADICTION_AUDIT,
+    }
+)
+V2_JOBS = frozenset(
+    {
+        ModelJob.INTAKE_UNSTRUCTURED_INPUT,
+        ModelJob.BLIND_SPOT_AUDIT,
+    }
+)
+SHARED_JOBS = frozenset(
+    {
+        ModelJob.RANK_NEXT_WORK_ITEM,
+        ModelJob.INTERPRET_USER_ANSWER,
+        ModelJob.ARTIFACT_GENERATION,
+    }
+)
 
 
 def _freeze(value: Any) -> Any:

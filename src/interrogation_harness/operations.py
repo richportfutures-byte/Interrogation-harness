@@ -12,7 +12,7 @@ from interrogation_harness import canonical
 from interrogation_harness.audit import AuditEngine
 from interrogation_harness.event_log import EventLog
 from interrogation_harness.events import Actor, EventType
-from interrogation_harness.interrogation import InterrogationEngine
+from interrogation_harness.interrogation import InterrogationEngine, OperationError
 from interrogation_harness.model import DEFAULT_MODEL_ADAPTER
 from interrogation_harness.model.adapter import ModelAdapter, ModelJob
 from interrogation_harness.projection import LedgerProjector
@@ -142,7 +142,14 @@ class HarnessOperations:
 
     # -- model-backed commands -------------------------------------------
 
+    def protocol_version(self) -> str:
+        """Project the current protocol version (defaults to V1)."""
+        return self.ledger().get("protocol_version", "1.0.0")
+
     def run_initial_extraction(self) -> ModelValidationResult:
+        # V2 sessions alias run-initial-extraction to run-intake (V2 spec Section 7).
+        if self.protocol_version() == "2.0.0":
+            return self.run_intake()
         source_markdown = self.store.read_source()
         payload = {
             "session_id": self.session_id,
@@ -155,6 +162,37 @@ class HarnessOperations:
         ids = self.op_ids("run-initial-extraction", payload)
         return self.validator().run(
             ModelJob.INITIAL_EXTRACTION,
+            session_id=self.session_id,
+            correlation_id=ids.correlation_id,
+            idempotency_key=ids.idempotency_key,
+            timestamp=ids.timestamp,
+            request_payload=payload,
+            source_markdown=source_markdown,
+        )
+
+    def run_intake(self, *, upgrade_to_v2: bool = False) -> ModelValidationResult:
+        """Run the V2 intake job.
+
+        A V1 session is upgraded only with an explicit ``--upgrade-to-v2`` request; this
+        is the sole path that turns a V1 session into a V2 session (V2 spec Section 6).
+        """
+        is_v2 = self.protocol_version() == "2.0.0"
+        if not is_v2 and not upgrade_to_v2:
+            raise OperationError(
+                "session is V1; pass --upgrade-to-v2 to run V2 intake on it"
+            )
+        source_markdown = self.store.read_source() if self.store.source_exists() else ""
+        payload = {
+            "session_id": self.session_id,
+            "schema_version": "1.0.0",
+            "source_markdown": source_markdown,
+            "do_not_mint_durable_ids": True,
+            "mark_model_inferences": True,
+            "cite_source_excerpts": True,
+        }
+        ids = self.op_ids("run-intake", payload)
+        return self.validator().run(
+            ModelJob.INTAKE_UNSTRUCTURED_INPUT,
             session_id=self.session_id,
             correlation_id=ids.correlation_id,
             idempotency_key=ids.idempotency_key,
