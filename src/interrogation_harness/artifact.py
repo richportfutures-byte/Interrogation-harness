@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from interrogation_harness import canonical
+from interrogation_harness.interrogation import OperationError
 from interrogation_harness.model.adapter import ModelAdapter, ModelJob, ModelRequest
 from interrogation_harness.validation import ModelContractValidator
 
@@ -27,9 +28,7 @@ class ArtifactGenerator:
 
     def generate_artifact(self) -> dict[str, Any]:
         ledger = self.ops.ledger()
-        blockers = _blocking_work_items(ledger)
-        if blockers and not ledger.get("force_closed"):
-            raise ValueError("generate-artifact requires no unresolved closure blockers or FORCE_CLOSED")
+        _assert_artifact_eligible(ledger)
 
         output = _artifact_output(ledger)
         ids = self.ops.op_ids("generate-artifact", {"projection": ledger})
@@ -43,7 +42,10 @@ class ArtifactGenerator:
             correlation_id=ids.correlation_id,
             idempotency_key=ids.idempotency_key,
             timestamp=ids.timestamp,
-            request_payload={"projection": ledger, "closure_mode": "force_close"},
+            request_payload={
+                "projection": ledger,
+                "closure_mode": "force_close" if ledger.get("force_closed") else "normal",
+            },
         )
         if not result.accepted or result.parsed_output is None:
             raise ValueError("; ".join(result.errors) or "artifact_generation rejected")
@@ -53,7 +55,7 @@ class ArtifactGenerator:
 
 def _artifact_output(ledger: dict[str, Any]) -> dict[str, Any]:
     markdown = _artifact_markdown(ledger)
-    return {
+    output = {
         "artifact_markdown": markdown,
         "blocking_warnings": [
             f"{item['id']}: {item['question']}"
@@ -62,6 +64,9 @@ def _artifact_output(ledger: dict[str, Any]) -> dict[str, Any]:
         "open_risk_register": _open_risk_register(ledger),
         "traceability_summary": _traceability_summary(ledger),
     }
+    if ledger.get("protocol_version") == "2.0.0":
+        output["closure_status"] = _closure_status(ledger)
+    return output
 
 
 def _artifact_markdown(ledger: dict[str, Any]) -> str:
@@ -183,6 +188,11 @@ def _known_limits(ledger: dict[str, Any]) -> list[str]:
     limits = []
     if _blocking_work_items(ledger):
         limits.append("Unresolved closure-blocking work remains.")
+    if ledger.get("protocol_version") == "2.0.0":
+        if _unresolved_contradictions(ledger):
+            limits.append("Unresolved contradictions remain.")
+        if _uncarried_external_validation(ledger):
+            limits.append("Outcome-determinative external validation remains.")
     if not limits:
         limits.append("No known limits recorded.")
     return limits
@@ -235,4 +245,101 @@ def _traceability_summary(ledger: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for item in ledger.get("assumptions", [])
         if item.get("status") == "locked"
+    ]
+
+
+def _assert_artifact_eligible(ledger: dict[str, Any]) -> None:
+    if ledger.get("protocol_version") != "2.0.0":
+        blockers = _blocking_work_items(ledger)
+        if blockers and not ledger.get("force_closed"):
+            raise OperationError(
+                "generate-artifact requires no unresolved closure blockers or FORCE_CLOSED"
+            )
+        return
+
+    if ledger.get("blind_spot_audit_status") != "complete":
+        raise OperationError(
+            "V2 generate-artifact requires a completed blind-spot audit"
+        )
+    if ledger.get("force_closed"):
+        return
+    if ledger.get("intake_status") not in {"complete", "not_required"}:
+        raise OperationError("V2 generate-artifact requires completed intake")
+    active = _active_work_items(ledger)
+    if active:
+        raise OperationError(
+            "V2 generate-artifact requires no active work items: "
+            + ", ".join(item["id"] for item in active)
+        )
+    blockers = _blocking_work_items(ledger)
+    if blockers:
+        raise OperationError(
+            "V2 generate-artifact requires no unresolved closure blockers: "
+            + ", ".join(item["id"] for item in blockers)
+        )
+    contradictions = _unresolved_contradictions(ledger)
+    if contradictions:
+        raise OperationError(
+            "V2 generate-artifact requires no unresolved contradictions: "
+            + ", ".join(item["id"] for item in contradictions)
+        )
+    external = _uncarried_external_validation(ledger)
+    if external:
+        raise OperationError(
+            "V2 generate-artifact requires outcome-determinative external validation "
+            "to be carried as open risk or force-close incompleteness: "
+            + ", ".join(item["id"] for item in external)
+        )
+
+
+def _closure_status(ledger: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": "force_closed" if ledger.get("force_closed") else "open",
+        "complete": not _v2_incomplete_reasons(ledger),
+        "force_closed_event": ledger.get("force_closed_event") if ledger.get("force_closed") else None,
+    }
+
+
+def _v2_incomplete_reasons(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    return (
+        _blocking_work_items(ledger)
+        + _unresolved_contradictions(ledger)
+        + _uncarried_external_validation(ledger)
+    )
+
+
+def _active_work_items(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in ledger.get("work_items", [])
+        if item.get("status") == "active"
+    ]
+
+
+def _unresolved_contradictions(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in ledger.get("contradictions", [])
+        if item.get("status") == "open"
+    ]
+
+
+def _uncarried_external_validation(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    statuses = {
+        "external_validation_required",
+        "undecidable",
+        "open_dependency",
+    }
+    carried = {
+        ref
+        for risk in ledger.get("risks", [])
+        if risk.get("status") == "open"
+        for ref in risk.get("source_refs", [])
+    }
+    return [
+        item
+        for item in ledger.get("assumptions", [])
+        if item.get("blast_radius") == "high"
+        and item.get("evidence_status") in statuses
+        and item.get("id") not in carried
     ]

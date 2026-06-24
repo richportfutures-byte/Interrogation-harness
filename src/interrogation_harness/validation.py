@@ -289,12 +289,19 @@ class ModelContractValidator:
             self._semantic_audit(parsed, refs)
             # V1 audits keep their original payload shape (no audit_type), so existing
             # V1 sessions stay byte-identical. Absent audit_type projects as a V1
-            # contradiction audit (Decision D2). V2 blind-spot audits (a later pass)
-            # set audit_type explicitly.
+            # contradiction audit (Decision D2).
             return [
                 {
                     "event_type": spec.records_event_type,
                     "payload": {"findings_summary": parsed},
+                }
+            ], {}
+        if job == ModelJob.BLIND_SPOT_AUDIT:
+            self._semantic_blind_spot_audit(parsed, refs)
+            return [
+                {
+                    "event_type": spec.records_event_type,
+                    "payload": {"audit_type": "blind_spot", "findings_summary": parsed},
                 }
             ], {}
         if job == ModelJob.ARTIFACT_GENERATION:
@@ -638,6 +645,123 @@ class ModelContractValidator:
                 if IdAllocator.is_durable_id(value) and not refs.exists(value):
                     raise SemanticValidationError(f"audit blocker reference does not exist: {value!r}")
 
+    def _semantic_blind_spot_audit(
+        self, parsed: dict[str, Any], refs: "_ProjectionRefs"
+    ) -> None:
+        for field_name in (
+            "missing_provenance",
+            "invalid_source_excerpts",
+            "unresolved_material_work",
+        ):
+            for ref in parsed.get(field_name, []):
+                if not IdAllocator.is_durable_id(ref) or not refs.exists(ref):
+                    raise SemanticValidationError(
+                        f"blind-spot audit reference does not exist: {ref!r}"
+                    )
+                if field_name == "unresolved_material_work" and not refs.is_work_item(ref):
+                    raise SemanticValidationError(
+                        f"unresolved_material_work must contain work item ids: {ref!r}"
+                    )
+        for blocker in parsed.get("artifact_blockers", []):
+            for value in _walk_values(blocker):
+                if IdAllocator.is_durable_id(value) and not refs.exists(value):
+                    raise SemanticValidationError(
+                        f"blind-spot audit blocker reference does not exist: {value!r}"
+                    )
+        for index, finding in enumerate(parsed.get("findings", [])):
+            self._semantic_blind_spot_finding(finding, refs, index)
+
+    def _semantic_blind_spot_finding(
+        self, finding: dict[str, Any], refs: "_ProjectionRefs", index: int
+    ) -> None:
+        path = f"findings[{index}]"
+        for ref in finding.get("refs", []):
+            if not IdAllocator.is_durable_id(ref) or not refs.exists(ref):
+                raise SemanticValidationError(
+                    f"{path} reference does not exist: {ref!r}"
+                )
+        target = finding.get("conversion_target")
+        if target == "no_op":
+            covered = finding.get("covered_by", [])
+            if not covered:
+                raise SemanticValidationError(f"{path} no-op finding must cite covered records")
+            for ref in covered:
+                if not IdAllocator.is_durable_id(ref) or not refs.exists(ref):
+                    raise SemanticValidationError(
+                        f"{path} covered record does not exist: {ref!r}"
+                    )
+            return
+        payload = finding.get(target)
+        if not isinstance(payload, dict):
+            raise SemanticValidationError(
+                f"{path} material finding requires {target} conversion payload"
+            )
+        if "id" in payload:
+            raise SemanticValidationError(
+                f"{path} conversion payload may not contain durable id"
+            )
+        if "tmp_handle" in payload:
+            raise SemanticValidationError(
+                f"{path} conversion payload may not contain model-owned temp handle"
+            )
+        if target == "work_item":
+            self._semantic_blind_spot_work_item(payload, finding, refs, path)
+        elif target == "risk":
+            _require_existing_refs(payload.get("source_refs", finding.get("refs", [])), refs, path)
+        elif target == "contradiction":
+            _require_existing_refs(payload.get("refs", []), refs, path)
+        elif target == "assumption":
+            self._semantic_blind_spot_assumption(payload, refs, path)
+
+    def _semantic_blind_spot_work_item(
+        self,
+        payload: dict[str, Any],
+        finding: dict[str, Any],
+        refs: "_ProjectionRefs",
+        path: str,
+    ) -> None:
+        _validate_intake_work_item(payload)
+        if (
+            "blocks_closure" in finding
+            and finding.get("blocks_closure") != payload.get("blocks_closure")
+        ):
+            raise SemanticValidationError(
+                f"{path} blocks_closure does not match work item conversion"
+            )
+        _require_existing_refs(payload.get("related_refs", []), refs, path)
+        source_refs = payload.get("source_assumption_refs", [])
+        _require_existing_refs(source_refs, refs, path)
+        for ref in source_refs:
+            if not ref.startswith("A-"):
+                raise SemanticValidationError(
+                    f"{path} source_assumption_refs must contain assumption ids: {ref!r}"
+                )
+        basis = payload.get("recommended_default_basis")
+        if basis is not None and not refs.exists(basis):
+            raise SemanticValidationError(
+                f"{path} recommended default basis does not exist: {basis!r}"
+            )
+
+    def _semantic_blind_spot_assumption(
+        self, payload: dict[str, Any], refs: "_ProjectionRefs", path: str
+    ) -> None:
+        if (
+            payload.get("source_type") == SourceType.MODEL_INFERRED.value
+            and payload.get("evidence_status") == EvidenceStatus.VERIFIED_USER_STATED.value
+        ):
+            raise SemanticValidationError(
+                f"{path} model_inferred assumption cannot be verified_user_stated"
+            )
+        if (
+            payload.get("source_type") == SourceType.EXTERNAL_REQUIRED.value
+            and payload.get("evidence_status")
+            != EvidenceStatus.EXTERNAL_VALIDATION_REQUIRED.value
+        ):
+            raise SemanticValidationError(
+                f"{path} external_required assumption must use external_validation_required"
+            )
+        _require_existing_refs(payload.get("depends_on", []), refs, path)
+
     def _semantic_artifact(self, parsed: dict[str, Any], refs: "_ProjectionRefs") -> None:
         for item in parsed.get("traceability_summary", []):
             if isinstance(item, dict):
@@ -662,6 +786,42 @@ class ModelContractValidator:
                 raise SemanticValidationError(
                     f"artifact invents locked assumption: {bullet!r}"
                 )
+        if refs.ledger.get("protocol_version") == "2.0.0":
+            self._semantic_v2_artifact_closure(parsed, refs)
+
+    def _semantic_v2_artifact_closure(
+        self, parsed: dict[str, Any], refs: "_ProjectionRefs"
+    ) -> None:
+        closure = parsed.get("closure_status")
+        if not isinstance(closure, dict):
+            raise SemanticValidationError("V2 artifact_generation requires closure_status")
+        force_closed = bool(refs.ledger.get("force_closed"))
+        expected_mode = "force_closed" if force_closed else "open"
+        if closure.get("mode") != expected_mode:
+            raise SemanticValidationError(
+                f"closure_status.mode must be {expected_mode!r}"
+            )
+        expected_event = refs.ledger.get("force_closed_event") if force_closed else None
+        if closure.get("force_closed_event") != expected_event:
+            raise SemanticValidationError(
+                "closure_status.force_closed_event does not match projection"
+            )
+        blockers = [
+            item
+            for item in refs.ledger.get("work_items", [])
+            if item.get("blocks_closure") and item.get("status") != "resolved"
+        ]
+        unresolved_contradictions = [
+            item
+            for item in refs.ledger.get("contradictions", [])
+            if item.get("status") == "open"
+        ]
+        external_validation = _uncarried_external_validation(refs.ledger)
+        complete = not blockers and not unresolved_contradictions and not external_validation
+        if closure.get("complete") != complete:
+            raise SemanticValidationError(
+                "closure_status.complete does not match unresolved blockers"
+            )
 
     def _append_operation_failed(
         self,
@@ -995,6 +1155,35 @@ def _validate_intake_work_item(work_item: dict[str, Any]) -> None:
             raise SemanticValidationError(
                 "derived question must reference at least one source assumption"
             )
+
+
+def _require_existing_refs(values: list[Any], refs: _ProjectionRefs, path: str) -> None:
+    for value in values:
+        if not IdAllocator.is_durable_id(value) or not refs.exists(value):
+            raise SemanticValidationError(
+                f"{path} reference does not exist: {value!r}"
+            )
+
+
+def _uncarried_external_validation(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    statuses = {
+        EvidenceStatus.EXTERNAL_VALIDATION_REQUIRED.value,
+        EvidenceStatus.UNDECIDABLE.value,
+        EvidenceStatus.OPEN_DEPENDENCY.value,
+    }
+    carried = {
+        ref
+        for risk in ledger.get("risks", [])
+        if risk.get("status") == "open"
+        for ref in risk.get("source_refs", [])
+    }
+    return [
+        item
+        for item in ledger.get("assumptions", [])
+        if item.get("blast_radius") == BlastRadius.HIGH.value
+        and item.get("evidence_status") in statuses
+        and item.get("id") not in carried
+    ]
 
 
 def _resolve_creation_ref(

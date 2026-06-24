@@ -133,6 +133,87 @@ _INTERPRET_WORK_ITEM_FIELDS = _WORK_ITEM_FIELDS | {
     "source_assumption_refs",
     "blocking_reason",
 }
+_BLIND_SPOT_TOP = {
+    "findings",
+    "missing_provenance",
+    "invalid_source_excerpts",
+    "unresolved_material_work",
+    "artifact_blockers",
+}
+_BLIND_SPOT_CATEGORIES = {
+    "authority_confusion",
+    "failure_behavior_omission",
+    "boundary_lifecycle_ambiguity",
+    "feedback_loop_closure",
+    "observability_reconciliation_gap",
+    "hidden_framework_vendor_lock_in",
+    "time_dependent_behavior",
+    "human_override_path",
+    "p_and_l_ledger_authority_confusion",
+    "order_signal_authority_confusion",
+    "stream_failure_behavior",
+    "feed_gap_reconnect_semantics",
+    "session_boundary_behavior",
+    "risk_gate_ownership",
+    "reconciliation_source_of_truth",
+    "execution_state_reporting_feedback_loop",
+    "framework_lock_in_masked_as_architecture_choice",
+    # Backward-compatible aliases from the canonical implementation spec draft.
+    "contradiction",
+    "undefined_term",
+    "authority_ambiguity",
+    "failure_mode_omission",
+    "lifecycle_ambiguity",
+    "observability_gap",
+    "external_validation_needed",
+    "open_dependency",
+    "scope_conflict",
+    "undecidable_issue",
+}
+_BLIND_SPOT_TARGETS = {"work_item", "risk", "contradiction", "assumption", "no_op"}
+_BLIND_SPOT_FINDING_FIELDS = {
+    "category",
+    "kind",
+    "refs",
+    "severity",
+    "description",
+    "conversion_target",
+    "blocks_closure",
+    "work_item",
+    "risk",
+    "contradiction",
+    "assumption",
+    "covered_by",
+}
+_AUDIT_WORK_ITEM_FIELDS = {
+    "kind",
+    "question",
+    "why_it_matters",
+    "what_breaks_if_wrong",
+    "blast_radius",
+    "blocks_closure",
+    "gap_type",
+    "related_refs",
+    "source_assumption_refs",
+    "answer_options",
+    "recommended_default",
+    "recommended_default_basis",
+    "blocking_reason",
+}
+_AUDIT_RISK_FIELDS = {"statement", "severity", "status", "source_refs"}
+_AUDIT_CONTRADICTION_FIELDS = {"refs", "severity", "description", "status"}
+_AUDIT_ASSUMPTION_FIELDS = {
+    "statement",
+    "status",
+    "source_type",
+    "source_excerpt",
+    "blast_radius",
+    "downstream_impact",
+    "risk_if_wrong",
+    "evidence_status",
+    "depends_on",
+    "external_fact",
+}
 
 
 def validate_output_schema(job: ModelJob | str, data: Any) -> dict[str, Any]:
@@ -152,6 +233,8 @@ def validate_output_schema(job: ModelJob | str, data: Any) -> dict[str, Any]:
         _validate_interpret_user_answer(copied, errors)
     elif resolved == ModelJob.CONTRADICTION_AUDIT:
         _validate_contradiction_audit(copied, errors)
+    elif resolved == ModelJob.BLIND_SPOT_AUDIT:
+        _validate_blind_spot_audit(copied, errors)
     elif resolved == ModelJob.ARTIFACT_GENERATION:
         _validate_artifact_generation(copied, errors)
     if errors:
@@ -453,6 +536,139 @@ def _validate_contradiction_audit(data: dict[str, Any], errors: list[str]) -> No
         _enum(finding, "severity", Severity, path, errors)
 
 
+def _validate_blind_spot_audit(data: dict[str, Any], errors: list[str]) -> None:
+    _exact_keys(data, _BLIND_SPOT_TOP, "blind_spot_audit", errors)
+    for key in _BLIND_SPOT_TOP:
+        _require_list(data, key, "blind_spot_audit", errors)
+    for index, finding in enumerate(data.get("findings", [])):
+        path = f"findings[{index}]"
+        if not isinstance(finding, dict):
+            errors.append(f"{path} must be an object")
+            continue
+        _known_keys(finding, _BLIND_SPOT_FINDING_FIELDS, path, errors)
+        _require_fields(
+            finding,
+            {"refs", "severity", "description", "conversion_target"},
+            path,
+            errors,
+        )
+        if "category" not in finding and "kind" not in finding:
+            errors.append(f"{path} requires category")
+        if "category" in finding and "kind" in finding:
+            errors.append(f"{path} may not include both category and kind")
+        category = finding.get("category", finding.get("kind"))
+        if category not in _BLIND_SPOT_CATEGORIES:
+            errors.append(f"{path}.category has illegal enum value: {category!r}")
+        _require_list(finding, "refs", path, errors)
+        _enum(finding, "severity", Severity, path, errors)
+        if not _nonempty_string(finding.get("description")):
+            errors.append(f"{path}.description must be a non-empty string")
+        target = finding.get("conversion_target")
+        if target not in _BLIND_SPOT_TARGETS:
+            errors.append(f"{path}.conversion_target has illegal enum value: {target!r}")
+        if "blocks_closure" in finding:
+            _require_bool(finding, "blocks_closure", path, errors)
+        if "covered_by" in finding:
+            _require_list(finding, "covered_by", path, errors)
+        _validate_blind_spot_conversion_payload(finding, path, errors)
+
+
+def _validate_blind_spot_conversion_payload(
+    finding: dict[str, Any], path: str, errors: list[str]
+) -> None:
+    target = finding.get("conversion_target")
+    payload_key = {
+        "work_item": "work_item",
+        "risk": "risk",
+        "contradiction": "contradiction",
+        "assumption": "assumption",
+    }.get(target)
+    if target == "no_op":
+        if not finding.get("covered_by"):
+            errors.append(f"{path}.covered_by is required for no_op findings")
+        return
+    if payload_key is None:
+        return
+    payload = finding.get(payload_key)
+    if not isinstance(payload, dict):
+        errors.append(f"{path}.{payload_key} must be an object")
+        return
+    fields = {
+        "work_item": _AUDIT_WORK_ITEM_FIELDS,
+        "risk": _AUDIT_RISK_FIELDS,
+        "contradiction": _AUDIT_CONTRADICTION_FIELDS,
+        "assumption": _AUDIT_ASSUMPTION_FIELDS,
+    }[payload_key]
+    _known_keys(payload, fields, f"{path}.{payload_key}", errors)
+    if "id" in payload or "tmp_handle" in payload:
+        errors.append(f"{path}.{payload_key} may not contain model-owned identity")
+    if payload_key == "work_item":
+        _require_fields(
+            payload,
+            {
+                "kind",
+                "question",
+                "why_it_matters",
+                "what_breaks_if_wrong",
+                "blast_radius",
+                "blocks_closure",
+            },
+            f"{path}.work_item",
+            errors,
+        )
+        _enum(payload, "kind", WorkItemKind, f"{path}.work_item", errors)
+        _enum(payload, "blast_radius", BlastRadius, f"{path}.work_item", errors)
+        _require_bool(payload, "blocks_closure", f"{path}.work_item", errors)
+        if payload.get("gap_type") is not None:
+            _enum_value(payload.get("gap_type"), GapType, f"{path}.work_item.gap_type", errors)
+        for field_name in ("related_refs", "source_assumption_refs", "answer_options"):
+            if field_name in payload:
+                _require_list(payload, field_name, f"{path}.work_item", errors)
+        for option in payload.get("answer_options", []):
+            _enum_value(option, AnswerClass, f"{path}.work_item.answer_options", errors)
+    elif payload_key == "risk":
+        _require_fields(payload, {"statement", "severity", "status"}, f"{path}.risk", errors)
+        _enum(payload, "severity", Severity, f"{path}.risk", errors)
+        _enum(payload, "status", RiskStatus, f"{path}.risk", errors)
+        if "source_refs" in payload:
+            _require_list(payload, "source_refs", f"{path}.risk", errors)
+    elif payload_key == "contradiction":
+        _require_fields(
+            payload,
+            {"refs", "severity", "description", "status"},
+            f"{path}.contradiction",
+            errors,
+        )
+        _require_list(payload, "refs", f"{path}.contradiction", errors)
+        _enum(payload, "severity", Severity, f"{path}.contradiction", errors)
+        _enum(payload, "status", ContradictionStatus, f"{path}.contradiction", errors)
+    elif payload_key == "assumption":
+        _require_fields(
+            payload,
+            {
+                "statement",
+                "status",
+                "source_type",
+                "source_excerpt",
+                "blast_radius",
+                "downstream_impact",
+                "risk_if_wrong",
+                "evidence_status",
+            },
+            f"{path}.assumption",
+            errors,
+        )
+        _enum(payload, "status", AssumptionStatus, f"{path}.assumption", errors)
+        _enum(payload, "source_type", SourceType, f"{path}.assumption", errors)
+        _enum(payload, "blast_radius", BlastRadius, f"{path}.assumption", errors)
+        _enum(payload, "evidence_status", EvidenceStatus, f"{path}.assumption", errors)
+        if "depends_on" in payload:
+            _require_list(payload, "depends_on", f"{path}.assumption", errors)
+        if payload.get("source_type") == SourceType.EXTERNAL_REQUIRED.value:
+            if not _nonempty_string(payload.get("external_fact")):
+                errors.append(f"{path}.assumption.external_fact is required for external_required")
+
+
 def _validate_artifact_generation(data: dict[str, Any], errors: list[str]) -> None:
     keys = {
         "artifact_markdown",
@@ -460,12 +676,30 @@ def _validate_artifact_generation(data: dict[str, Any], errors: list[str]) -> No
         "open_risk_register",
         "traceability_summary",
     }
-    _exact_keys(data, keys, "artifact_generation", errors)
+    allowed = keys | {"closure_status"}
+    _known_keys(data, allowed, "artifact_generation", errors)
     _require_fields(data, keys, "artifact_generation", errors)
     if not isinstance(data.get("artifact_markdown"), str):
         errors.append("artifact_generation.artifact_markdown must be a string")
     for key in ("blocking_warnings", "open_risk_register", "traceability_summary"):
         _require_list(data, key, "artifact_generation", errors)
+    if "closure_status" in data:
+        _validate_closure_status(data["closure_status"], errors)
+
+
+def _validate_closure_status(value: Any, errors: list[str]) -> None:
+    if not isinstance(value, dict):
+        errors.append("artifact_generation.closure_status must be an object")
+        return
+    fields = {"mode", "complete", "force_closed_event"}
+    _exact_keys(value, fields, "closure_status", errors)
+    if value.get("mode") not in {"open", "force_closed"}:
+        errors.append(f"closure_status.mode has illegal enum value: {value.get('mode')!r}")
+    _require_bool(value, "complete", "closure_status", errors)
+    if value.get("force_closed_event") is not None and not isinstance(
+        value.get("force_closed_event"), str
+    ):
+        errors.append("closure_status.force_closed_event must be a string or null")
 
 
 def _validate_creation_event_payload(

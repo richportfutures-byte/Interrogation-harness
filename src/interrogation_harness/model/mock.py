@@ -33,6 +33,22 @@ class MockScenario(str, Enum):
     INTAKE_INVALID_ENUM = "intake_invalid_enum"
     INTAKE_BAD_SESSION_FRAME = "intake_missing_session_frame"
     INTAKE_UNVERIFIABLE_EXCERPT = "intake_unverifiable_excerpt"
+    # V2 blind-spot audit scenarios (Pass D).
+    BLIND_SPOT_AUDIT_NO_FINDINGS = "blind_spot_audit:no_findings"
+    BLIND_SPOT_AUDIT_AUTHORITY_CONFUSION = "blind_spot_audit:authority_confusion"
+    BLIND_SPOT_AUDIT_FAILURE_PATH = "blind_spot_audit:failure_path_omission"
+    BLIND_SPOT_AUDIT_EXTERNAL_VALIDATION = "blind_spot_audit:external_validation"
+    BLIND_SPOT_AUDIT_UNDECIDABLE = "blind_spot_audit:undecidable"
+    BLIND_SPOT_AUDIT_CONTRADICTION = "blind_spot_audit:contradiction"
+    BLIND_SPOT_AUDIT_COVERED = "blind_spot_audit:covered"
+    BLIND_SPOT_AUDIT_HIGH_NONBLOCKING = "blind_spot_audit:high_nonblocking"
+    BLIND_SPOT_AUDIT_MEDIUM_BLOCKING_NO_REASON = (
+        "blind_spot_audit:medium_blocking_no_reason"
+    )
+    BLIND_SPOT_AUDIT_LOW_BLOCKING = "blind_spot_audit:low_blocking"
+    BLIND_SPOT_AUDIT_NONEXISTENT_COVERED = "blind_spot_audit:nonexistent_covered"
+    BLIND_SPOT_AUDIT_DURABLE_ID = "blind_spot_audit:durable_id"
+    BLIND_SPOT_AUDIT_MISSING_CONVERSION = "blind_spot_audit:missing_conversion"
 
 
 def _raw_json(obj: dict[str, Any]) -> str:
@@ -397,12 +413,238 @@ RESPONSES.update(
 )
 
 
+def _blind_spot_audit(findings: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "findings": findings,
+        "missing_provenance": [],
+        "invalid_source_excerpts": [],
+        "unresolved_material_work": [],
+        "artifact_blockers": [],
+    }
+
+
+def _audit_work_item(
+    *,
+    category: str,
+    question: str,
+    severity: str = "high",
+    blocks_closure: bool = True,
+    blocking_reason: str | None = None,
+) -> dict[str, Any]:
+    work_item = {
+        "kind": "clarify",
+        "question": question,
+        "why_it_matters": "The finding affects protocol closure.",
+        "what_breaks_if_wrong": "The artifact may hide an unresolved implementation premise.",
+        "blast_radius": severity,
+        "blocks_closure": blocks_closure,
+        "gap_type": "blind_spot",
+        "related_refs": ["A-0001"],
+        "source_assumption_refs": ["A-0001"],
+        "answer_options": ["confirm", "reject", "revise", "defer", "unknown"],
+    }
+    if blocking_reason is not None:
+        work_item["blocking_reason"] = blocking_reason
+    return {
+        "category": category,
+        "refs": ["A-0001"],
+        "severity": severity,
+        "description": question,
+        "conversion_target": "work_item",
+        "blocks_closure": blocks_closure,
+        "work_item": work_item,
+    }
+
+
+def _blind_spot_external_validation() -> dict[str, Any]:
+    return {
+        "category": "external_validation_needed",
+        "refs": ["A-0001"],
+        "severity": "high",
+        "description": "Processor retry guarantees require external validation.",
+        "conversion_target": "assumption",
+        "assumption": {
+            "statement": "Processor retry guarantees require external validation.",
+            "status": "candidate",
+            "source_type": "external_required",
+            "source_excerpt": None,
+            "blast_radius": "high",
+            "downstream_impact": "Payment retry correctness",
+            "risk_if_wrong": "Retries may duplicate or drop payments.",
+            "evidence_status": "external_validation_required",
+            "external_fact": "Processor retry contract",
+            "depends_on": ["A-0001"],
+        },
+    }
+
+
+def _blind_spot_undecidable() -> dict[str, Any]:
+    return {
+        "category": "undecidable_issue",
+        "refs": ["A-0001"],
+        "severity": "medium",
+        "description": "Current session cannot decide retry ordering under partition.",
+        "conversion_target": "assumption",
+        "assumption": {
+            "statement": "Retry ordering under partition is undecidable in the current session.",
+            "status": "candidate",
+            "source_type": "model_inferred",
+            "source_excerpt": None,
+            "blast_radius": "medium",
+            "downstream_impact": "Failure-mode design",
+            "risk_if_wrong": "Partition behavior may be implemented incorrectly.",
+            "evidence_status": "undecidable",
+            "depends_on": ["A-0001"],
+        },
+    }
+
+
+def _blind_spot_contradiction() -> dict[str, Any]:
+    return {
+        "category": "contradiction",
+        "refs": ["A-0001", "A-0002"],
+        "severity": "high",
+        "description": "Retry ownership and payment-write ownership conflict.",
+        "conversion_target": "contradiction",
+        "contradiction": {
+            "refs": ["A-0001", "A-0002"],
+            "severity": "high",
+            "description": "Retry ownership and payment-write ownership conflict.",
+            "status": "open",
+        },
+    }
+
+
+def _blind_spot_covered() -> dict[str, Any]:
+    return {
+        "category": "authority_confusion",
+        "refs": ["A-0001"],
+        "severity": "low",
+        "description": "Authority issue is already represented.",
+        "conversion_target": "no_op",
+        "covered_by": ["A-0001"],
+    }
+
+
+def _blind_spot_durable_id() -> dict[str, Any]:
+    finding = _audit_work_item(
+        category="authority_confusion",
+        question="Who owns payment retry authority?",
+    )
+    finding["work_item"]["id"] = "W-9999"
+    return finding
+
+
+def _blind_spot_missing_conversion() -> dict[str, Any]:
+    return {
+        "category": "authority_confusion",
+        "refs": ["A-0001"],
+        "severity": "high",
+        "description": "Authority is unresolved but not converted.",
+        "conversion_target": "work_item",
+        "blocks_closure": True,
+    }
+
+
+RESPONSES.update(
+    {
+        MockScenario.BLIND_SPOT_AUDIT_NO_FINDINGS: _raw_json(_blind_spot_audit([])),
+        MockScenario.BLIND_SPOT_AUDIT_AUTHORITY_CONFUSION: _raw_json(
+            _blind_spot_audit(
+                [
+                    _audit_work_item(
+                        category="authority_confusion",
+                        question="Who is authoritative for retry ledger state?",
+                    )
+                ]
+            )
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_FAILURE_PATH: _raw_json(
+            _blind_spot_audit(
+                [
+                    _audit_work_item(
+                        category="failure_behavior_omission",
+                        question="What happens when retry persistence fails?",
+                    )
+                ]
+            )
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_EXTERNAL_VALIDATION: _raw_json(
+            _blind_spot_audit([_blind_spot_external_validation()])
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_UNDECIDABLE: _raw_json(
+            _blind_spot_audit([_blind_spot_undecidable()])
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_CONTRADICTION: _raw_json(
+            _blind_spot_audit([_blind_spot_contradiction()])
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_COVERED: _raw_json(
+            _blind_spot_audit([_blind_spot_covered()])
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_HIGH_NONBLOCKING: _raw_json(
+            _blind_spot_audit(
+                [
+                    _audit_work_item(
+                        category="authority_confusion",
+                        question="Who owns payment retry authority?",
+                        severity="high",
+                        blocks_closure=False,
+                    )
+                ]
+            )
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_MEDIUM_BLOCKING_NO_REASON: _raw_json(
+            _blind_spot_audit(
+                [
+                    _audit_work_item(
+                        category="failure_behavior_omission",
+                        question="What happens if retry reconciliation fails?",
+                        severity="medium",
+                        blocks_closure=True,
+                    )
+                ]
+            )
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_LOW_BLOCKING: _raw_json(
+            _blind_spot_audit(
+                [
+                    _audit_work_item(
+                        category="human_override_path",
+                        question="Who can override retry warnings?",
+                        severity="low",
+                        blocks_closure=True,
+                        blocking_reason="Low work must not block closure.",
+                    )
+                ]
+            )
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_NONEXISTENT_COVERED: _raw_json(
+            _blind_spot_audit(
+                [
+                    {
+                        **_blind_spot_covered(),
+                        "covered_by": ["A-9999"],
+                    }
+                ]
+            )
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_DURABLE_ID: _raw_json(
+            _blind_spot_audit([_blind_spot_durable_id()])
+        ),
+        MockScenario.BLIND_SPOT_AUDIT_MISSING_CONVERSION: _raw_json(
+            _blind_spot_audit([_blind_spot_missing_conversion()])
+        ),
+    }
+)
+
+
 DEFAULT_SCENARIO_BY_JOB: dict[ModelJob, MockScenario] = {
     ModelJob.INITIAL_EXTRACTION: MockScenario.INITIAL_EXTRACTION,
     ModelJob.INTAKE_UNSTRUCTURED_INPUT: MockScenario.INTAKE_VALID,
     ModelJob.RANK_NEXT_WORK_ITEM: MockScenario.RANK_NEXT_WORK_ITEM,
     ModelJob.INTERPRET_USER_ANSWER: MockScenario.INTERPRET_CONFIRM,
     ModelJob.CONTRADICTION_AUDIT: MockScenario.CONTRADICTION_AUDIT,
+    ModelJob.BLIND_SPOT_AUDIT: MockScenario.BLIND_SPOT_AUDIT_NO_FINDINGS,
     ModelJob.ARTIFACT_GENERATION: MockScenario.ARTIFACT_GENERATION,
 }
 

@@ -216,6 +216,9 @@ class HarnessOperations:
     def run_audit(self, *, operation_name: str = "run-audit") -> dict[str, Any]:
         return AuditEngine(self).run_audit(operation_name=operation_name)
 
+    def run_blind_spot_audit(self) -> dict[str, Any]:
+        return AuditEngine(self).run_blind_spot_audit()
+
     def force_close(self, reason: str = "force close requested") -> dict[str, Any]:
         return AuditEngine(self).force_close(reason=reason)
 

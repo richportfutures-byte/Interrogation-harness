@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("new_statement")
     revise.add_argument("--reason", default="user revised")
     _session(sub, "run-audit")
+    _session(sub, "run-blind-spot-audit")
     force = _session(sub, "force-close")
     force.add_argument("--reason", default="force close requested")
     _session(sub, "generate-artifact")
@@ -112,6 +113,8 @@ def _dispatch(args, ops: HarnessOperations):
         return ops.revise(args.entity_id, args.new_statement, reason=args.reason)
     if command == "run-audit":
         return ops.run_audit()
+    if command == "run-blind-spot-audit":
+        return ops.run_blind_spot_audit()
     if command == "force-close":
         return ops.force_close(reason=args.reason)
     if command == "generate-artifact":

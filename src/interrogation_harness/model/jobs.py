@@ -71,8 +71,8 @@ JOB_SPECS: dict[ModelJob, ModelJobSpec] = {
         records_event_type=EventType.ARTIFACT_GENERATED,
     ),
     # V2 jobs (V2 spec Sections 3 and 4). intake creates entities by temp handle, like
-    # initial_extraction. blind_spot_audit reports findings only and is registered here;
-    # its runtime conversion is not implemented in this pass.
+    # initial_extraction. blind_spot_audit reports findings only; the harness converts
+    # accepted findings into ordinary event-backed records.
     ModelJob.INTAKE_UNSTRUCTURED_INPUT: ModelJobSpec(
         job=ModelJob.INTAKE_UNSTRUCTURED_INPUT,
         may_create=True,

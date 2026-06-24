@@ -21,8 +21,7 @@ class ModelJob(str, Enum):
     INTERPRET_USER_ANSWER = "interpret_user_answer"
     CONTRADICTION_AUDIT = "contradiction_audit"
     ARTIFACT_GENERATION = "artifact_generation"
-    # V2 jobs. blind_spot_audit is registered here but its runtime behavior is not
-    # implemented in this pass.
+    # V2 jobs.
     INTAKE_UNSTRUCTURED_INPUT = "intake_unstructured_input"
     BLIND_SPOT_AUDIT = "blind_spot_audit"
 

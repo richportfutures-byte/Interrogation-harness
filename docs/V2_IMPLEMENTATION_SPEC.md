@@ -377,23 +377,29 @@ Finding object:
 
 | Field | Required | Type | Nullable | Enum / Rules |
 |---|---:|---|---:|---|
-| `kind` | yes | string | no | `contradiction`, `undefined_term`, `authority_ambiguity`, `failure_mode_omission`, `lifecycle_ambiguity`, `observability_gap`, `external_validation_needed`, `open_dependency`, `scope_conflict` |
+| `category` | yes | string | no | Protocol blind-spot category. The harness accepts the original `kind` spelling only as a compatibility alias; a finding may not include both. |
 | `refs` | yes | list | no | Durable IDs only, all must resolve |
 | `severity` | yes | string | no | `high`, `medium`, `low` |
 | `description` | yes | string | no | Non-empty |
-| `recommended_work_item_kind` | yes | string | no | Existing work item kind enum |
+| `conversion_target` | yes | string | no | `work_item`, `risk`, `contradiction`, `assumption`, `no_op` |
+| `blocks_closure` | optional | boolean | no | Required only when a work-item conversion needs an explicit top-level closure signal; must match the work item payload |
+| `work_item` | conditional | object | no | Required when `conversion_target == "work_item"`; existing work-item creation semantics without model-owned IDs or temp handles |
+| `risk` | conditional | object | no | Required when `conversion_target == "risk"`; existing risk creation semantics without model-owned IDs or temp handles |
+| `contradiction` | conditional | object | no | Required when `conversion_target == "contradiction"`; existing contradiction creation semantics without model-owned IDs or temp handles |
+| `assumption` | conditional | object | no | Required when `conversion_target == "assumption"`; existing assumption creation semantics without model-owned IDs or temp handles |
+| `covered_by` | conditional | list | no | Required when `conversion_target == "no_op"`; durable IDs only, all must resolve |
 
 Semantic validation:
 - The job mutates nothing directly.
 - The accepted output records `AUDIT_RUN.payload.audit_type == "blind_spot"` (Decision D2).
-- The harness deterministically converts findings into ordinary entities and work items, reusing the existing V1 conversion flow (`src/interrogation_harness/audit.py`) extended for the V2 finding kinds.
-- Duplicate findings must not create duplicate contradictions or duplicate blocker work. Deduplication uses the existing key (refs plus description) plus finding kind.
-- High-severity converted work must block closure. Converted work sets `premise_origin = "blind_spot"` (or `"audit"`), a `gap_type` mapped from the finding kind, and `blocks_closure` / `blocking_reason` per Decision D5 (high always blocks with no reason required; medium that blocks carries a non-empty `blocking_reason`; low does not block).
+- The harness deterministically converts findings into ordinary assumptions, risks, contradictions, and work items, reusing the existing V1 conversion flow (`src/interrogation_harness/audit.py`) extended for the V2 finding categories.
+- Duplicate findings must not create duplicate contradictions or duplicate blocker work. Deduplication uses the persisted conversion shape, such as refs plus description for contradictions and target plus question plus gap type for work.
+- High-severity converted work must block closure. Converted work sets `premise_origin = "blind_spot"` (or `"audit"`), a `gap_type` mapped from the finding category, and `blocks_closure` / `blocking_reason` per Decision D5 (high always blocks with no reason required; medium that blocks carries a non-empty `blocking_reason`; low does not block).
 
 Rejection examples:
 - Finding references `A-9999`.
-- Unknown finding kind.
-- Missing `recommended_work_item_kind`.
+- Unknown finding category.
+- Missing conversion payload for a material finding.
 - High-severity blocker converted with `blocks_closure == false`.
 
 ### 4.5 artifact_generation
