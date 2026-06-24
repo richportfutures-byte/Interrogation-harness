@@ -822,6 +822,18 @@ class ModelContractValidator:
             raise SemanticValidationError(
                 "closure_status.complete does not match unresolved blockers"
             )
+        warning_text = "\n".join(str(item) for item in parsed.get("blocking_warnings", []))
+        risk_ids = {
+            item.get("id")
+            for item in parsed.get("open_risk_register", [])
+            if isinstance(item, dict)
+        }
+        for blocker in blockers:
+            blocker_id = blocker.get("id")
+            if blocker_id not in risk_ids and blocker_id not in warning_text:
+                raise SemanticValidationError(
+                    f"artifact omits unresolved blocker: {blocker_id!r}"
+                )
 
     def _append_operation_failed(
         self,

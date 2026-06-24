@@ -57,10 +57,7 @@ def _artifact_output(ledger: dict[str, Any]) -> dict[str, Any]:
     markdown = _artifact_markdown(ledger)
     output = {
         "artifact_markdown": markdown,
-        "blocking_warnings": [
-            f"{item['id']}: {item['question']}"
-            for item in _high_unresolved_work(ledger)
-        ],
+        "blocking_warnings": _blocking_warning_lines(ledger),
         "open_risk_register": _open_risk_register(ledger),
         "traceability_summary": _traceability_summary(ledger),
     }
@@ -70,6 +67,8 @@ def _artifact_output(ledger: dict[str, Any]) -> dict[str, Any]:
 
 
 def _artifact_markdown(ledger: dict[str, Any]) -> str:
+    if ledger.get("protocol_version") == "2.0.0":
+        return _v2_artifact_markdown(ledger)
     sections = [
         ("Source Summary", [_source_summary(ledger)]),
         ("Locked Assumptions", _assumption_lines(ledger, "locked")),
@@ -89,6 +88,38 @@ def _artifact_markdown(ledger: dict[str, Any]) -> str:
         ("Known Limits", _known_limits(ledger)),
     ]
     lines = ["# Final Artifact", ""]
+    for title, body in sections:
+        lines.append(f"## {title}")
+        lines.append("")
+        if body:
+            lines.extend(f"- {item}" for item in body)
+        else:
+            lines.append("None")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _v2_artifact_markdown(ledger: dict[str, Any]) -> str:
+    sections = [
+        ("Scope and Objective", _v2_scope_lines(ledger)),
+        ("Closure Status", _v2_closure_lines(ledger)),
+        ("Locked Assumptions", _v2_assumption_register_lines(ledger, "locked")),
+        ("Provisional and Unconfirmed Assumptions", _v2_unconfirmed_assumption_lines(ledger)),
+        ("Revision Log", _v2_revision_lines(ledger)),
+        ("Open Risks and Undecidable Assumptions", _v2_open_risk_lines(ledger)),
+        ("Authority Map", _v2_authority_lines(ledger)),
+        ("Failure-Mode Declarations", _v2_failure_mode_lines(ledger)),
+        ("Definitions for Critical Terms", _term_lines(ledger)),
+        ("Decisions", _v2_decision_lines(ledger)),
+        ("Items Explicitly Excluded From Scope", _v2_exclusion_lines(ledger)),
+        ("Validation Actions Still Required", _v2_validation_action_lines(ledger)),
+        ("Open Work Items", _work_lines(ledger)),
+        ("Contradictions and Reconciliation", _contradiction_lines(ledger)),
+        ("Provenance Index", _v2_provenance_lines(ledger)),
+        ("Downstream Builder Instructions", _v2_builder_instruction_lines(ledger)),
+        ("Known Limits", _known_limits(ledger)),
+    ]
+    lines = ["# Premise Control Artifact V2", ""]
     for title, body in sections:
         lines.append(f"## {title}")
         lines.append("")
@@ -155,6 +186,183 @@ def _contradiction_lines(ledger: dict[str, Any]) -> list[str]:
     ]
 
 
+def _v2_scope_lines(ledger: dict[str, Any]) -> list[str]:
+    frame = ledger.get("session_frame") or {}
+    return [
+        f"Topic: {_value_or_unset(frame.get('topic'))}",
+        f"Downstream use: {_value_or_unset(frame.get('downstream_use'))}",
+        f"Closure standard: {_value_or_unset(frame.get('closure_standard'))}",
+        f"Input mode: {_value_or_unset(frame.get('input_mode'))}",
+        _source_summary(ledger),
+    ]
+
+
+def _v2_closure_lines(ledger: dict[str, Any]) -> list[str]:
+    status = _closure_status(ledger)
+    lines = [
+        f"Mode: {status['mode']}",
+        f"Complete: {_yes_no(status['complete'])}",
+        f"Intake status: {ledger.get('intake_status', 'not_required')}",
+        f"Blind-spot audit status: {ledger.get('blind_spot_audit_status', 'not_run')}",
+    ]
+    if status.get("force_closed_event"):
+        lines.append(f"Force-close event: {status['force_closed_event']}")
+    if not status["complete"]:
+        lines.append("Closure is controlled incomplete closure, not success.")
+    return lines
+
+
+def _v2_assumption_register_lines(ledger: dict[str, Any], status: str) -> list[str]:
+    return [
+        _v2_assumption_line(item)
+        for item in ledger.get("assumptions", [])
+        if item.get("status") == status
+    ]
+
+
+def _v2_unconfirmed_assumption_lines(ledger: dict[str, Any]) -> list[str]:
+    return [
+        _v2_assumption_line(item)
+        for item in ledger.get("assumptions", [])
+        if item.get("status") != "locked"
+    ]
+
+
+def _v2_assumption_line(item: dict[str, Any]) -> str:
+    dependencies = ", ".join(item.get("depends_on", [])) or "none"
+    answers = ", ".join(item.get("user_answer_events", [])) or "none recorded"
+    evidence = item.get("evidence_status") or item.get("source_type")
+    return (
+        f"{item['id']}: {item['statement']} Status: {item.get('status')}. "
+        f"Blast radius: {item.get('blast_radius')}. Evidence: {evidence}. "
+        f"Dependencies: {dependencies}. Source answer events: {answers}."
+    )
+
+
+def _v2_revision_lines(ledger: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for collection, text_name in (
+        ("assumptions", "assumption"),
+        ("terms", "term"),
+        ("decisions", "decision"),
+    ):
+        for item in ledger.get(collection, []):
+            for entry in item.get("revision_history", []):
+                lines.append(
+                    f"{item['id']} ({text_name}) revised at {entry['event_id']}: "
+                    f"{entry['prior_statement']} -> {entry['new_statement']}"
+                )
+    return lines
+
+
+def _v2_open_risk_lines(ledger: dict[str, Any]) -> list[str]:
+    lines = _risk_register_lines(ledger)
+    evidence_statuses = {
+        "external_validation_required",
+        "undecidable",
+        "open_dependency",
+        "unverified_accepted",
+    }
+    lines.extend(
+        f"{item['id']} ({item.get('evidence_status')}): {item['statement']}"
+        for item in ledger.get("assumptions", [])
+        if item.get("evidence_status") in evidence_statuses
+    )
+    return lines
+
+
+def _v2_authority_lines(ledger: dict[str, Any]) -> list[str]:
+    authority_terms = ("authority", "authoritative", "owner", "owns", "source of truth", "veto")
+    lines = [
+        f"{item['id']}: {item['statement']}"
+        for item in ledger.get("assumptions", [])
+        if _contains_any(item.get("statement", ""), authority_terms)
+    ]
+    lines.extend(
+        f"{item['id']} ({item.get('status')}): {item['question']}"
+        for item in ledger.get("work_items", [])
+        if item.get("gap_type") == "authority_ownership" and item.get("status") != "resolved"
+    )
+    if not lines:
+        lines.append("No explicit authority statements recorded in the projection.")
+    return lines
+
+
+def _v2_failure_mode_lines(ledger: dict[str, Any]) -> list[str]:
+    failure_terms = ("failure", "outage", "reconnect", "gap", "fallback", "retry")
+    lines = [
+        f"{item['id']}: {item['statement']}"
+        for item in ledger.get("assumptions", [])
+        if _contains_any(item.get("statement", ""), failure_terms)
+    ]
+    lines.extend(
+        f"{item['id']} ({item.get('status')}): {item['question']}"
+        for item in ledger.get("work_items", [])
+        if item.get("gap_type") == "failure_mode" and item.get("status") != "resolved"
+    )
+    if not lines:
+        lines.append("No explicit failure-mode declarations recorded in the projection.")
+    return lines
+
+
+def _v2_decision_lines(ledger: dict[str, Any]) -> list[str]:
+    return [
+        f"{item['id']} ({item.get('status')}): {item['decision']}"
+        for item in ledger.get("decisions", [])
+    ]
+
+
+def _v2_exclusion_lines(ledger: dict[str, Any]) -> list[str]:
+    excluded_terms = ("excluded", "out of scope", "not in scope")
+    lines = [
+        f"{item['id']}: {item['statement']}"
+        for item in ledger.get("assumptions", [])
+        if _contains_any(item.get("statement", ""), excluded_terms)
+    ]
+    if not lines:
+        lines.append("No exclusions recorded in the projection.")
+    return lines
+
+
+def _v2_validation_action_lines(ledger: dict[str, Any]) -> list[str]:
+    lines = _external_lines(ledger)
+    lines.extend(
+        f"{item['id']}: {item['question']}"
+        for item in ledger.get("work_items", [])
+        if item.get("status") != "resolved" and item.get("blocks_closure")
+    )
+    lines.extend(
+        f"{item['id']}: {item['statement']}"
+        for item in _uncarried_external_validation(ledger)
+    )
+    return _dedupe(lines)
+
+
+def _v2_provenance_lines(ledger: dict[str, Any]) -> list[str]:
+    lines = []
+    for item in ledger.get("assumptions", []):
+        excerpt = item.get("source_excerpt")
+        verified = item.get("source_excerpt_verified")
+        origin = item.get("premise_origin") or "unspecified"
+        evidence = item.get("evidence_status") or item.get("source_type")
+        lines.append(
+            f"{item['id']}: origin={origin}, source={item['source_type']}, "
+            f"evidence={evidence}, verified={verified}, excerpt={excerpt!r}"
+        )
+    return lines
+
+
+def _v2_builder_instruction_lines(ledger: dict[str, Any]) -> list[str]:
+    instructions = [
+        "Treat the event log and ledger as the source of truth.",
+        "Use locked assumptions as authoritative for the audited scope.",
+        "Do not treat provisional, model-inferred, undecidable, or externally dependent assumptions as confirmed facts.",
+    ]
+    if not _closure_status(ledger)["complete"]:
+        instructions.append("Do not treat this artifact as complete closure.")
+    return instructions
+
+
 def _external_lines(ledger: dict[str, Any]) -> list[str]:
     lines = [
         f"{item['id']}: {item['statement']}"
@@ -198,6 +406,18 @@ def _known_limits(ledger: dict[str, Any]) -> list[str]:
     return limits
 
 
+def _blocking_warning_lines(ledger: dict[str, Any]) -> list[str]:
+    if ledger.get("protocol_version") == "2.0.0":
+        return [
+            f"{item['id']}: {item['question']}"
+            for item in _blocking_work_items(ledger)
+        ]
+    return [
+        f"{item['id']}: {item['question']}"
+        for item in _high_unresolved_work(ledger)
+    ]
+
+
 def _blocking_work_items(ledger: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         item
@@ -228,10 +448,14 @@ def _open_risk_register(ledger: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "id": item["id"],
             "statement": item["question"],
-            "severity": "high",
+            "severity": item.get("blast_radius", "high"),
             "source": "unresolved_high_blast_radius_work",
         }
-        for item in _high_unresolved_work(ledger)
+        for item in (
+            _blocking_work_items(ledger)
+            if ledger.get("protocol_version") == "2.0.0"
+            else _high_unresolved_work(ledger)
+        )
     )
     return risks
 
@@ -343,3 +567,29 @@ def _uncarried_external_validation(ledger: dict[str, Any]) -> list[dict[str, Any
         and item.get("evidence_status") in statuses
         and item.get("id") not in carried
     ]
+
+
+def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(needle in lowered for needle in needles)
+
+
+def _value_or_unset(value: Any) -> str:
+    if value is None or value == "":
+        return "not recorded"
+    return str(value)
+
+
+def _yes_no(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out

@@ -1,0 +1,195 @@
+{
+  "assumptions": [
+    {
+      "blast_radius": "high",
+      "created_event": "E-0004",
+      "downstream_impact": "Signal authority and trading decisions",
+      "evidence_status": "verified_user_stated",
+      "id": "A-0001",
+      "intake_label": "CA-01",
+      "premise_origin": "intake",
+      "revision_history": [],
+      "risk_if_wrong": "Orders may be generated from the wrong market input",
+      "source_excerpt": "Trading signals are derived from the market data stream.",
+      "source_excerpt_verified": true,
+      "source_type": "user_stated",
+      "statement": "Trading signals are derived from the market data stream.",
+      "status": "locked",
+      "tested_by_work_item": null,
+      "updated_event": "E-0014",
+      "user_answer_events": []
+    },
+    {
+      "blast_radius": "high",
+      "created_event": "E-0005",
+      "downstream_impact": "Order authority boundary",
+      "evidence_status": "verified_user_stated",
+      "id": "A-0002",
+      "intake_label": "CA-02",
+      "premise_origin": "intake",
+      "revision_history": [],
+      "risk_if_wrong": "Signals and execution may both appear authoritative",
+      "source_excerpt": "The execution gateway owns order placement.",
+      "source_excerpt_verified": true,
+      "source_type": "user_stated",
+      "statement": "The execution gateway owns order placement.",
+      "status": "candidate",
+      "tested_by_work_item": null,
+      "updated_event": "E-0005",
+      "user_answer_events": []
+    },
+    {
+      "blast_radius": "high",
+      "created_event": "E-0006",
+      "downstream_impact": "Human override path",
+      "evidence_status": "model_inferred",
+      "id": "A-0003",
+      "intake_label": "CA-03",
+      "premise_origin": "intake",
+      "revision_history": [],
+      "risk_if_wrong": "Operators may bypass or duplicate risk decisions",
+      "source_excerpt": null,
+      "source_excerpt_verified": false,
+      "source_type": "model_inferred",
+      "statement": "Manual override ownership during reconnect is not specified.",
+      "status": "candidate",
+      "tested_by_work_item": null,
+      "updated_event": "E-0006",
+      "user_answer_events": []
+    },
+    {
+      "blast_radius": "high",
+      "created_event": "E-0019",
+      "depends_on": [
+        "A-0001"
+      ],
+      "downstream_impact": "Market data recovery and order safety",
+      "evidence_status": "external_validation_required",
+      "id": "A-0004",
+      "premise_origin": "blind_spot",
+      "revision_history": [],
+      "risk_if_wrong": "Orders may resume from stale or incomplete market state",
+      "source_excerpt": null,
+      "source_excerpt_verified": false,
+      "source_type": "external_required",
+      "statement": "Feed gap reconnect behavior requires external validation against venue rules.",
+      "status": "candidate",
+      "tested_by_work_item": null,
+      "updated_event": "E-0019",
+      "user_answer_events": []
+    }
+  ],
+  "blind_spot_audit_status": "complete",
+  "contradictions": [],
+  "decisions": [],
+  "force_closed": true,
+  "force_closed_event": "E-0023",
+  "intake_status": "complete",
+  "protocol_version": "2.0.0",
+  "risks": [],
+  "schema_version": "1.0.0",
+  "session_frame": {
+    "closure_standard": "locked authority and failure behavior or explicit incomplete closure",
+    "downstream_use": "implementation handoff",
+    "input_mode": "unstructured",
+    "topic": "trading risk gate"
+  },
+  "session_id": "v2_sample_session",
+  "source_hash": "532a0cbc2b4ca0c63a72a0e7d62a71ce609690fd235c558bdc8bd6277a6f5997",
+  "terms": [
+    {
+      "created_event": "E-0007",
+      "definition": "The component that can veto orders before execution.",
+      "id": "T-0001",
+      "revision_history": [],
+      "status": "provisional",
+      "term": "risk gate",
+      "updated_event": "E-0007"
+    }
+  ],
+  "work_items": [
+    {
+      "answer_options": [
+        "confirm",
+        "reject",
+        "revise",
+        "defer",
+        "unknown"
+      ],
+      "blast_radius": "high",
+      "blocks_closure": true,
+      "created_event": "E-0008",
+      "deferred_reason": null,
+      "derived_question_label": "DQ-01",
+      "gap_type": "authority_ownership",
+      "id": "W-0001",
+      "kind": "resolve_assumption",
+      "question": "Confirm that trading signals are derived from the market data stream.",
+      "recommended_default": null,
+      "recommended_default_basis": null,
+      "source_assumption_ids": [
+        "A-0001"
+      ],
+      "status": "resolved",
+      "target_entity": null,
+      "updated_event": "E-0016",
+      "what_breaks_if_wrong": "The implementation may use the wrong upstream source.",
+      "why_it_matters": "It defines signal authority."
+    },
+    {
+      "answer_options": [
+        "confirm",
+        "reject",
+        "revise",
+        "defer",
+        "unknown"
+      ],
+      "blast_radius": "high",
+      "blocks_closure": true,
+      "created_event": "E-0009",
+      "deferred_reason": null,
+      "derived_question_label": "DQ-02",
+      "gap_type": "authority_ownership",
+      "id": "W-0002",
+      "kind": "clarify",
+      "question": "Who owns manual override decisions during reconnect?",
+      "recommended_default": null,
+      "recommended_default_basis": null,
+      "source_assumption_ids": [
+        "A-0003"
+      ],
+      "status": "open",
+      "target_entity": null,
+      "updated_event": "E-0009",
+      "what_breaks_if_wrong": "Operators may override the wrong authority boundary.",
+      "why_it_matters": "It controls the human override path."
+    },
+    {
+      "answer_options": [
+        "confirm",
+        "reject",
+        "revise",
+        "defer",
+        "unknown"
+      ],
+      "blast_radius": "high",
+      "blocks_closure": true,
+      "created_event": "E-0020",
+      "deferred_reason": null,
+      "gap_type": "authority_ownership",
+      "id": "W-0003",
+      "kind": "clarify",
+      "question": "Who can override the risk gate during reconnect?",
+      "recommended_default": null,
+      "recommended_default_basis": null,
+      "source_assumption_ids": [
+        "A-0003"
+      ],
+      "status": "open",
+      "target_entity": "A-0003",
+      "updated_event": "E-0020",
+      "what_breaks_if_wrong": "Manual action can bypass risk ownership.",
+      "why_it_matters": "It defines the human override path."
+    }
+  ]
+}

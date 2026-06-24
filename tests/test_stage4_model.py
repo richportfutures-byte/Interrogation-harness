@@ -33,6 +33,8 @@ def _request(job: ModelJob, payload=None) -> ModelRequest:
         (ModelJob.INTERPRET_USER_ANSWER, MockScenario.INTERPRET_UNKNOWN),
         (ModelJob.CONTRADICTION_AUDIT, MockScenario.CONTRADICTION_AUDIT),
         (ModelJob.ARTIFACT_GENERATION, MockScenario.ARTIFACT_GENERATION),
+        (ModelJob.ARTIFACT_GENERATION, MockScenario.ARTIFACT_GENERATION_V2),
+        (ModelJob.ARTIFACT_GENERATION, MockScenario.ARTIFACT_FORCE_CLOSED_INCOMPLETE),
         (ModelJob.INTERPRET_USER_ANSWER, MockScenario.MALFORMED_JSON),
         (ModelJob.INTERPRET_USER_ANSWER, MockScenario.ILLEGAL_TRANSITION),
         (ModelJob.INITIAL_EXTRACTION, MockScenario.CREATION_WITH_DURABLE_ID),

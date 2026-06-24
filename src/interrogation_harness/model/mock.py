@@ -22,6 +22,8 @@ class MockScenario(str, Enum):
     INTERPRET_UNKNOWN = "interpret_user_answer:unknown"
     CONTRADICTION_AUDIT = "contradiction_audit"
     ARTIFACT_GENERATION = "artifact_generation"
+    ARTIFACT_GENERATION_V2 = "artifact_generation_v2"
+    ARTIFACT_FORCE_CLOSED_INCOMPLETE = "artifact_force_closed_incomplete"
     MALFORMED_JSON = "malformed_json"
     ILLEGAL_TRANSITION = "illegal_transition"
     CREATION_WITH_DURABLE_ID = "creation_with_durable_id"
@@ -255,6 +257,61 @@ RESPONSES: dict[MockScenario, str] = {
             "traceability_summary": [
                 {"entity_id": "A-0001", "source": "user_stated", "verified": True}
             ],
+        }
+    ),
+    MockScenario.ARTIFACT_GENERATION_V2: _raw_json(
+        {
+            "artifact_markdown": (
+                "# Premise Control Artifact V2\n\n"
+                "## Scope and Objective\n\n"
+                "- Topic: payment retries\n\n"
+                "## Closure Status\n\n"
+                "- Mode: open\n"
+                "- Complete: true\n\n"
+                "## Locked Assumptions\n\n"
+                "- A-0001: Payments require idempotency keys. Status: locked.\n"
+            ),
+            "blocking_warnings": [],
+            "open_risk_register": [],
+            "traceability_summary": [
+                {"entity_id": "A-0001", "source": "user_stated", "verified": True}
+            ],
+            "closure_status": {
+                "mode": "open",
+                "complete": True,
+                "force_closed_event": None,
+            },
+        }
+    ),
+    MockScenario.ARTIFACT_FORCE_CLOSED_INCOMPLETE: _raw_json(
+        {
+            "artifact_markdown": (
+                "# Premise Control Artifact V2\n\n"
+                "## Closure Status\n\n"
+                "- Mode: force_closed\n"
+                "- Complete: false\n\n"
+                "## Locked Assumptions\n\n"
+                "- A-0001: Payments require idempotency keys. Status: locked.\n\n"
+                "## Open Work Items\n\n"
+                "- W-0001 (high, open): Confirm retry ownership?\n"
+            ),
+            "blocking_warnings": ["W-0001: Confirm retry ownership?"],
+            "open_risk_register": [
+                {
+                    "id": "W-0001",
+                    "statement": "Confirm retry ownership?",
+                    "severity": "high",
+                    "source": "unresolved_closure_blocker",
+                }
+            ],
+            "traceability_summary": [
+                {"entity_id": "A-0001", "source": "user_stated", "verified": True}
+            ],
+            "closure_status": {
+                "mode": "force_closed",
+                "complete": False,
+                "force_closed_event": "E-0004",
+            },
         }
     ),
     MockScenario.MALFORMED_JSON: '{"proposed_events": [',

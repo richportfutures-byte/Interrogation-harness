@@ -61,9 +61,9 @@ environment:
 uv run python -m interrogation_harness resume-session sample_session
 ```
 
-## Sample Session
+## Sample Sessions
 
-The committed sample lives at `sessions/sample_session/` and contains:
+The committed V1 sample lives at `sessions/sample_session/` and contains:
 
 ```
 source.md
@@ -87,3 +87,13 @@ assumptions, a model-inferred assumption, verified user-stated provenance, a hig
 blast-radius work item, an unknown answer routed to an open risk, a deferred item, a
 revised assumption, a rejected illegal transition, and a force-closed final artifact
 that keeps unresolved high-risk work visible.
+
+The committed V2 sample lives at `sessions/v2_sample_session/` and is regenerated with:
+
+```
+uv run python scripts/build_v2_sample_session.py
+```
+
+It demonstrates V2 activation, unstructured intake, premise answer assimilation,
+blind-spot audit conversion, closure gating, controlled incomplete force close, and
+the final V2 artifact format.
