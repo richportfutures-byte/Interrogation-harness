@@ -61,6 +61,31 @@ environment:
 uv run python -m interrogation_harness resume-session sample_session
 ```
 
+## Live Gemini Adapter
+
+The deterministic mock remains the default model adapter so tests and acceptance
+rebuilds run offline. To use Google Gemini for real interrogation runs, set:
+
+```
+export INTERROGATION_HARNESS_MODEL_PROVIDER=gemini
+export GEMINI_API_KEY="your-key"
+export GEMINI_MODEL="gemini-3.5-flash"
+```
+
+Optional knobs:
+
+```
+export GEMINI_API_VERSION="v1"
+export GEMINI_TIMEOUT_SECONDS="120"
+export GEMINI_MAX_OUTPUT_TOKENS="65536"
+export GEMINI_THINKING_LEVEL="high"
+export GEMINI_TEMPERATURE="0.2"
+```
+
+The adapter uses Gemini's Interactions API with `response_format` set to JSON schema.
+The harness still treats the model as untrusted: raw output is recorded, then parsed,
+schema-checked, semantically validated, and only accepted events mutate the ledger.
+
 ## Sample Sessions
 
 The committed V1 sample lives at `sessions/sample_session/` and contains:
